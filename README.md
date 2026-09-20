@@ -52,12 +52,9 @@
 
 ##  Capturas de pantalla
 
-<!--
-Agrega aquí tus capturas reales, por ejemplo:
-![Pantalla de seguridad](docs/screenshots/seguridad.png)
-![Cuarentena](docs/screenshots/problemas.png)
--->
-_Próximamente — agrega tus propias capturas en `docs/screenshots/` y enlázalas aquí._
+<img width="1099" height="646" alt="Captura de pantalla 2026-09-20 135440" src="https://github.com/user-attachments/assets/af113eb2-fa06-4e2d-94c5-e9e72f6cdd4b" />
+<img width="1098" height="639" alt="Captura de pantalla 2026-09-20 135531" src="https://github.com/user-attachments/assets/333217d2-7c20-405e-93cc-334d5e187074" />
+<img width="1109" height="656" alt="Captura de pantalla 2026-09-20 135522" src="https://github.com/user-attachments/assets/d61c4cd0-d5a4-4e81-abf9-1aca20416041" />
 
 ##  Requisitos
 
