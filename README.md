@@ -150,4 +150,37 @@ Los *pull requests* son bienvenidos. Para cambios grandes, abre primero un *issu
 
 ---
 
+## Para que antivirus no reconozcan a David Secure como HackTool:
+
+En Windows
+
+-Ve a Microsoft Defender
+
+-Busca "Proteccion cntra virus y amenazas"
+
+-En "Configuracion de proteccion contra virus y amenazas" haz click en "Administrar la configuracion", si te sale UAC dale a "Si"
+
+-Baja hasta "Exclusiones" y haz click en "Añadir o quitar exclusiones"
+
+-Selecciona "Añadir Exclusion" y selecciona el archivo PY de David Secure
+
+## En macOS
+
+-Abre la Terminal
+
+-Pega esto en la Terminal
+```bash
+chmod +x /ruta/a/tu/david_secure.py
+```
+
+## Si usas antivirus de terceros (Ej: MacKeeper, Norton, Avast)
+
+-Abre la aplicación de tu antivirus en la Mac.
+
+-Busca el panel de Configuración o Preferencias.
+
+-Selecciona la pestaña de Exclusiones, Lista blanca (Whitelist) o Elementos permitidos.
+
+-Haz clic en el botón de añadir (+) y selecciona el archivo david_secure.py para que el escáner no lo analice.
+
 <p align="center">Hecho con 🛡️ y Python — un proyecto educativo, no un producto comercial.</p>
