@@ -150,4 +150,37 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 
 ---
 
+## To prevent antivirus software from flagging David Secure as a HackTool:
+
+## On Windows:
+
+- Go to Microsoft Defender.
+
+- Look for "Virus & threat protection."
+
+- Under "Virus & threat protection settings," click "Manage settings"; if the UAC prompt appears, click "Yes."
+
+- Scroll down to "Exclusions" and click "Add or remove exclusions."
+
+- Select "Add an exclusion" and choose the David Secure .py file.
+
+## On macOS
+
+-Open the Terminal
+
+-Paste this in the Terminal
+```bash
+chmod +x /root/a/you/david_secure.py
+```
+
+## If you use third-party antivirus software (e.g., MacKeeper, Norton, Avast)
+
+-Open your antivirus application on your Mac.
+
+-Look for the Settings or Preferences panel.
+
+-Select the Exclusions, Whitelist, or Allowed Items tab.
+
+-Click the add button (+) and select the file david_secure.py so that the scanner does not analyze it.
+
 <p align="center">Made with 🛡️ and Python — an educational project, not a commercial product.</p>
