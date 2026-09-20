@@ -66,6 +66,13 @@ PROCESOS_SOSPECHOSOS_DEFAULT = ["mimikatz.exe", "nc.exe", "netcat.exe", "keylogg
 
 HASH_BUFFER_SIZE = 65536
 
+
+# Clave XOR estática para "ofuscar" los archivos en cuarentena y hacerlos inejecutables
+QUARANTINE_XOR_KEY = 0x5A 
+# Parámetros sospechosos comunes en herramientas de explotación
+ARGUMENTOS_SOSPECHOSOS = {"sekurlsa::", "lsadump::", "-lvp", "-le", "exec cmd.exe"}
+# ----------------------
+
 # Paleta de colores: tema claro (original) y tema oscuro (nuevo)
 THEMES = {
     "light": {
@@ -264,18 +271,31 @@ def is_excluded(dirpath: str, exclusions: list) -> bool:
 
 
 def quarantine_move(filepath: str, quarantine_dir: Path) -> Optional[str]:
-    """Mueve un archivo a cuarentena evitando colisiones de nombre (si ya
-    existe un archivo con el mismo nombre, se le agrega un sufijo único)."""
+    """Mueve un archivo a cuarentena, cifra su contenido para inactivarlo
+    y remueve todos los permisos de ejecución del sistema operativo."""
     try:
         filename = os.path.basename(filepath)
-        dest = quarantine_dir / filename
+        dest = quarantine_dir / f"{filename}.locked" 
+        
         if dest.exists():
-            stem, ext = os.path.splitext(filename)
-            dest = quarantine_dir / f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
-        shutil.move(filepath, str(dest))
+            stem, _ = os.path.splitext(filename)
+            dest = quarantine_dir / f"{stem}_{uuid.uuid4().hex[:8]}.locked"
+
+        with open(filepath, "rb") as f_in:
+            data = f_in.read()
+            
+        encrypted_data = bytearray(b ^ QUARANTINE_XOR_KEY for b in data)
+        
+        with open(dest, "wb") as f_out:
+            f_out.write(encrypted_data)
+
+        os.remove(filepath)
+        os.chmod(str(dest), 0o000)
+        
         return str(dest)
     except OSError:
         return None
+
 
 
 def open_folder_in_explorer(path: str) -> None:
