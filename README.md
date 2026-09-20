@@ -1,5 +1,5 @@
 #  David Secure
-
+ 
 **Motor de antivirus de escritorio construido en Python (Tkinter)** — escaneo por hash, heurística de doble extensión, cuarentena real y protección en tiempo real de procesos sospechosos.
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)
