@@ -10,6 +10,10 @@
 
 ---
 
+> **Aviso**: David Secure es una pequeña herramienta de anti-virus, no intenta ser el escudo principal
+
+---
+
 ##  Tabla de contenido
 
 - [Características](#-características)
