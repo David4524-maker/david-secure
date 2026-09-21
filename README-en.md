@@ -183,4 +183,47 @@ chmod +x /root/a/you/david_secure.py
 
 -Click the add button (+) and select the file david_secure.py so that the scanner does not analyze it.
 
+## Set David Secure to launch whenever you turn on your PC
+
+On Windows
+
+-Press Windows + R
+
+-Type `shell:startup`
+
+-Copy the `david_secure.py` file and paste it into the Startup folder
+
+On macOS
+
+-Go to System Settings > General > Login Items.
+
+-In the "Open at Login" section, click the plus (+) button. Find and select the `david_secure.py` file.
+
+On Linux
+
+-Open the Linux terminal
+
+-Go to your user's hidden autostart folder; if it doesn't exist, create it:
+```bash
+mkdir -p ~/.config/autostart
+```
+
+-Create a configuration file for David Secure using your favorite editor (e.g., nano):
+```bash
+nano ~/.config/autostart/david_secure.desktop
+```
+
+-Paste the following content into the file (make sure to replace the path with the actual location of the script):
+```bash
+[Desktop Entry]
+Type=Application
+Name=David Secure Antivirus
+Comment=Real-time process monitor
+Exec=python3 /actual/path/to/your/david_secure.py
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+```
+-Save the file (in nano, press Control + O, Enter, and then Control + X)
+
 <p align="center">Made with 🛡️ and Python — an educational project, not a commercial product.</p>
