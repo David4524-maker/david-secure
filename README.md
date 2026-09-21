@@ -68,7 +68,7 @@
 ##  Instalación
 
 ```bash
-git clone https://github.com/tu-usuario/david-secure.git
+git clone https://github.com/David4524-maker/david-secure.git
 cd david-secure
 pip install -r requirements.txt   # o simplemente: pip install psutil
 python david_secure.py
@@ -156,7 +156,7 @@ En Windows
 
 -Ve a Microsoft Defender
 
--Busca "Proteccion cntra virus y amenazas"
+-Busca "Proteccion contra virus y amenazas"
 
 -En "Configuracion de proteccion contra virus y amenazas" haz click en "Administrar la configuracion", si te sale UAC dale a "Si"
 
