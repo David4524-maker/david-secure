@@ -183,4 +183,49 @@ chmod +x /ruta/a/tu/david_secure.py
 
 -Haz clic en el botón de añadir (+) y selecciona el archivo david_secure.py para que el escáner no lo analice.
 
+---
+
+## Hacer que David Secure inicie cada vez que enciendas tu PC
+
+En Windows
+
+-Presiona Windows + R
+
+-Escribe `shell:startup`
+
+-Copia el archivo `david_secure.py` y pegalo en la carpeta de Inicio
+
+En macOS
+
+-Ve a Ajustes del Sistema > General > Ítems de inicio (Login Items).
+
+-En la sección "Abrir al iniciar sesión", haz clic en el botón con el símbolo de más (+).Busca y selecciona el archivo david_secure.py
+
+En Linux
+
+-Abre la terminal de linux
+
+-Ve a la carpeta oculta de aplicaciones de inicio de tu usuario, si no existe, creala
+```bash
+mkdir -p ~/.config/autostart
+```
+
+-Crea un archivo de configuración para David Secure usando tu editor favorito (Ej: nano)
+```bash
+nano ~/.config/autostart/david_secure.desktop
+```
+
+-Pega el siguiente contenido dentro del archivo (asegúrate de cambiar la ruta por la ubicación real del script)
+```bash
+[Desktop Entry]
+Type=Application
+Name=David Secure Antivirus
+Comment=Monitor de procesos en tiempo real
+Exec=python3 /ruta/real/a/tu/david_secure.py
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+```
+-Guarda el archivo (en nano presionas Control + O, Enter y luego Control + X)
+
 <p align="center">Hecho con 🛡️ y Python — un proyecto educativo, no un producto comercial.</p>
