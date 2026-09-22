@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>David Secure</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  body {
+    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+    background: #1a1a2e;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    overflow-x: hidden;
+  }
+  
+  .app {
+    display: flex;
+    width: 100%;
+    max-width: 1100px;
+    height: 680px;
+    border-radius: 15px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    position: relative;
+  }
+  
+  /* ========= PANEL IZQUIERDO ========= */
+  .left-panel {
+    width: 300px;
+    background: #3131A1;
+    padding: 20px 0;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  
+  .logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 15px;
+    margin-bottom: 15px;
+  }
+  
+  .logo svg { margin-right: 5px; }
+  
+  .logo-text {
+    font-size: 26px;
+    font-weight: bold;
+    color: #000;
+    letter-spacing: -1px;
+  }
+  
+  .logo-text .secure {
+    color: #FF7F00;
+  }
+  
+  /* Botones de idioma */
+  .lang-buttons {
+    display: flex;
+    gap: 6px;
+    padding: 0 20px;
+    margin-bottom: 20px;
+  }
+  
+  .lang-btn {
+    flex: 1;
+    background: #FF7F00;
+    color: white;
+    border: 2px solid transparent;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s;
+  }
+  
+  .lang-btn:hover { background: #FF9933; }
+  
+  .lang-btn.active {
+    background: #FFD700;
+    color: #333;
+    border-color: #FF7F00;
+  }
+  
+  /* Navegación */
+  .nav-btn {
+    background: transparent;
+    color: white;
+    border: none;
+    text-align: left;
+    padding: 12px 25px;
+    font-size: 16px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.2s;
+    font-weight: 500;
+  }
+  
+  .nav-btn:hover { background: rgba(255,255,255,0.08); }
+  
+  .nav-btn.active { background: rgba(255,255,255,0.15); }
+  
+  .nav-btn.info      { color: #80D4FF; }
+  .nav-btn.seguridad { color: #FF7F00; }
+  .nav-btn.cuentas   { color: #66FF33; }
+  .nav-btn.dispositivo { color: #B3B3B3; }
+  .nav-btn.problemas { color: #FF4D4D; }
+  
+  /* ========= PANEL DERECHO ========= */
+  .right-panel {
+    flex: 1;
+    background: #0099E6;
+    padding: 30px;
+    overflow-y: auto;
+    position: relative;
+  }
+  
+  .right-panel::-webkit-scrollbar { width: 8px; }
+  .right-panel::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.3);
+    border-radius: 4px;
+  }
+  
+  .view { display: none; animation: fadeIn 0.3s; }
+  .view.active { display: block; }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  /* Títulos */
+  .title {
+    color: white;
+    font-size: 30px;
+    margin-bottom: 20px;
+    font-weight: bold;
+  }
+  
+  .title-black { color: black; font-weight: normal; }
+  
+  .title-icon {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 26px;
+  }
+  
+  /* Info */
+  .info-line {
+    color: white;
+    font-size: 16px;
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+  
+  .info-desc {
+    color: #CCFFFF;
+    font-size: 14px;
+    font-style: italic;
+    margin-top: 30px;
+    line-height: 1.6;
+  }
+  
+  /* Seguridad */
+  .btn-scan {
+    display: block;
+    width: 320px;
+    padding: 18px;
+    border: none;
+    border-radius: 4px;
+    font-size: 22px;
+    color: white;
+    cursor: pointer;
+    font-family: inherit;
+    margin-bottom: 12px;
+    transition: transform 0.15s, box-shadow 0.15s;
+    font-weight: 500;
+  }
+  
+  .btn-scan:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 15px rgba(0,0,0,0.3);
+  }
+  
+  .btn-scan:active:not(:disabled) { transform: translateY(0); }
+  
+  .btn-rapido { background: #5CB85C; }
+  .btn-rapido:hover:not(:disabled) { background: #4CAE4C; }
+  
+  .btn-completo { background: #000; }
+  .btn-completo:hover:not(:disabled) { background: #222; }
+  
+  .btn-scan:disabled { opacity: 0.6; cursor: not-allowed; }
+  
+  .checkbox-wrap {
+    display: flex;
+    align-items: center;
+    margin: 18px 0;
+    color: white;
+    font-size: 13px;
+  }
+  
+  .checkbox-wrap input {
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    cursor: pointer;
+    accent-color: #FF7F00;
+  }
+  
+  .checkbox-wrap label { cursor: pointer; user-select: none; }
+  
+  .log-box {
+    background: white;
+    border: 3px solid #000;
+    border-radius: 3px;
+    padding: 10px;
+    height: 180px;
+    overflow-y: auto;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 12px;
+    color: #222;
+    line-height: 1.6;
+    margin-top: 10px;
+  }
+  
+  .log-box::-webkit-scrollbar { width: 8px; }
+  .log-box::-webkit-scrollbar-thumb {
+    background: #0099E6;
+    border-radius: 4px;
+  }
+  
+  .log-line { padding: 1px 0; }
+  .log-ok { color: #228B22; font-weight: bold; }
+  .log-threat { color: #CC0000; font-weight: bold; }
+  .log-warn { color: #FF8C00; font-weight: bold; }
+  .log-info { color: #4169E1; }
+  
+  /* Cuentas / Dispositivo / Problemas */
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #0077B3;
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+  }
+  
+  .row-label { color: white; font-size: 15px; }
+  .row-value { font-size: 15px; font-weight: bold; }
+  .row-value.green { color: #66FF33; }
+  .row-value.red { color: #FF4D4D; }
+  
+  .threat-row {
+    display: flex;
+    align-items: center;
+    background: #FF4D4D;
+    padding: 12px 15px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    color: white;
+    font-size: 13px;
+  }
+  
+  .threat-row .icon {
+    margin-right: 10px;
+    font-size: 16px;
+  }
+  
+  /* Responsive */
+  @media (max-width: 800px) {
+    .app { flex-direction: column; height: auto; }
+    .left-panel { width: 100%; padding: 15px 0; }
+    .logo { padding: 0 10px; }
+    .logo-text { font-size: 22px; }
+    .nav-btn { padding: 10px 20px; font-size: 14px; }
+    .right-panel { padding: 20px; }
+    .title { font-size: 24px; }
+    .btn-scan { width: 100%; font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  
+  <!-- ============ PANEL IZQUIERDO ============ -->
+  <div class="left-panel">
+    
+    <!-- Logo -->
+    <div class="logo">
+      <svg width="55" height="60" viewBox="0 0 70 90">
+        <polygon points="10,5 35,5 35,75 10,50" fill="#FF0000"/>
+        <polygon points="35,5 60,5 60,50 35,75" fill="#FFFF00"/>
+        <polygon points="40,25 55,25 40,65 30,25 37,25 40,45"
+                 fill="#FF7F00" stroke="none"/>
+      </svg>
+      <span class="logo-text">David<span class="secure">Secure</span></span>
+    </div>
+    
+    <!-- Botones de Idioma -->
+    <div class="lang-buttons">
+      <button class="lang-btn active" id="btnEs">Español</button>
+      <button class="lang-btn" id="btnEn">English</button>
+    </div>
+    
+    <!-- Navegación -->
+    <button class="nav-btn info active" data-view="info" id="navInfo">Info  ⓘ</button>
+    <button class="nav-btn seguridad" data-view="seguridad" id="navSeguridad">Seguridad  🛡️</button>
+    <button class="nav-btn cuentas" data-view="cuentas" id="navCuentas">Cuentas  👤</button>
+    <button class="nav-btn dispositivo" data-view="dispositivo" id="navDispositivo">Dispositivo  🖥️</button>
+    <button class="nav-btn problemas" data-view="problemas" id="navProblemas">PROBLEMAS  ❗</button>
+  </div>
+  
+  <!-- ============ PANEL DERECHO ============ -->
+  <div class="right-panel">
+    
+    <!-- VISTA INFO -->
+    <div class="view" id="viewInfo">
+      <h1 class="title" id="infoTitle">Información</h1>
+      <p class="info-line" id="infoName">Nombre del Antivirus: David Secure Engine</p>
+      <p class="info-line" id="infoVersion">Versión: 3.14 (Open Source)</p>
+      <p class="info-line" id="infoPlatform">Plataforma: Windows, macOS, Linux</p>
+      <p class="info-line" id="infoArch">Arquitectura: Escaneo Heurístico por Hashes SHA-256</p>
+      <p class="info-desc" id="infoDesc">
+        David Secure es un antivirus heurístico de nueva generación
+        capaz de detectar y bloquear amenazas en tiempo real.
+      </p>
+    </div>
+    
+    <!-- VISTA SEGURIDAD -->
+    <div class="view active" id="viewSeguridad">
+      <h1 class="title title-black">
+        <span id="segTitle">| Análisis</span>
+        <span class="title-icon">🔍</span>
+      </h1>
+      
+      <button class="btn-scan btn-rapido" id="btnRapido">Rapido</button>
+      <button class="btn-scan btn-completo" id="btnCompleto">Completo</button>
+      
+      <div class="checkbox-wrap">
+        <input type="checkbox" id="chkAuto">
+        <label for="chkAuto" id="chkAutoLabel">
+          Dejar que David Secure te proteja automaticamente
+        </label>
+      </div>
+      
+      <div class="log-box" id="logBox">
+        <div class="log-line">David Secure listo. Esperando instrucciones...</div>
+      </div>
+    </div>
+    
+    <!-- VISTA CUENTAS -->
+    <div class="view" id="viewCuentas">
+      <h1 class="title" id="cuentasTitle">Seguridad de Cuentas</h1>
+      <div id="cuentasList"></div>
+    </div>
+    
+    <!-- VISTA DISPOSITIVO -->
+    <div class="view" id="viewDispositivo">
+      <h1 class="title" id="dispTitle">Seguridad del Dispositivo</h1>
+      <div id="dispList"></div>
+    </div>
+    
+    <!-- VISTA PROBLEMAS -->
+    <div class="view" id="viewProblemas">
+      <h1 class="title" id="probTitle">Amenazas Bloqueadas</h1>
+      <div id="probList"></div>
+    </div>
+    
+  </div>
+</div>
+
+<script>
+  // ============ ESTADO ============
+  const state = {
+    lang: 'es',
+    view: 'info',
+    scanning: false,
+    threatsBlocked: [],
+    autoProtection: false
+  };
+  
+  // ============ TEXTOS ============
+  const texts = {
+    es: {
+      navInfo: 'Info  ⓘ',
+      navSeguridad: 'Seguridad  🛡️',
+      navCuentas: 'Cuentas  👤',
+      navDispositivo: 'Dispositivo  🖥️',
+      navProblemas: 'PROBLEMAS  ❗',
+      infoTitle: 'Información',
+      infoName: 'Nombre del Antivirus: David Secure Engine',
+      infoVersion: 'Versión: 3.14 (Open Source)',
+      infoPlatform: 'Plataforma: Windows, macOS, Linux',
+      infoArch: 'Arquitectura: Escaneo Heurístico por Hashes SHA-256',
+      infoDesc: 'David Secure es un antivirus heurístico de nueva generación capaz de detectar y bloquear amenazas en tiempo real.',
+      segTitle: '| Análisis',
+      segRapido: 'Rapido',
+      segCompleto: 'Completo',
+      segAuto: 'Dejar que David Secure te proteja automaticamente',
+      segReady: 'David Secure listo. Esperando instrucciones...',
+      segAutoOn: '✅ Protección automática ACTIVADA. Monitoreando en tiempo real.',
+      segAutoOff: '⚠️ Protección automática DESACTIVADA.',
+      scanStart: 'Iniciando Análisis {tipo}...',
+      scanLoading: 'Cargando firmas de virus... OK',
+      scanRAM: 'Analizando memoria RAM...',
+      scanRegistry: 'Escaneando Registro del Sistema...',
+      scanTemp: 'Analizando archivos temporales...',
+      scanNetwork: 'Revisando conexiones de red...',
+      scanIntegrity: 'Verificando integridad de archivos del sistema...',
+      scanDownloads: 'Escaneando descargas recientes...',
+      scanProcesses: 'Analizando procesos en segundo plano...',
+      scanFullHDD: 'Escaneando todos los discos duros...',
+      scanBoot: 'Analizando sectores de arranque...',
+      scanUSB: 'Verificando dispositivos USB conectados...',
+      scanFinish: 'Análisis {tipo} finalizado.',
+      scanFiles: 'Archivos escaneados: {n}',
+      scanThreats: 'Amenazas neutralizadas: {n}',
+      scanClean: '✅ El sistema está limpio.',
+      scanFound: '🛑 ¡Amenazas detectadas y bloqueadas!',
+      scanSummary: 'El análisis {tipo} ha finalizado.',
+      cuentasTitle: 'Seguridad de Cuentas',
+      cuentas: [
+        { name: 'Correo Electrónico Principal', status: 'Seguro', color: 'green' },
+        { name: 'Redes Sociales', status: 'Contraseña Filtrada', color: 'red' },
+        { name: 'Banca en Línea', status: 'Seguro (2FA Activado)', color: 'green' },
+        { name: 'Cuentas de Juegos', status: 'Seguro', color: 'green' }
+      ],
+      dispTitle: 'Seguridad del Dispositivo',
+      dispItems: [
+        { name: 'Sistema Operativo', value: navigator.platform },
+        { name: 'Firewall', value: 'Activado y Bloqueando intrusiones' },
+        { name: 'Actualizaciones', value: 'Al día' },
+        { name: 'Cifrado de Disco', value: 'Activado (AES-256)' },
+        { name: 'Puertos Abiertos', value: 'Ninguno detectado' }
+      ],
+      probTitle: 'Amenazas Bloqueadas',
+      probEmpty: 'No hay amenazas detectadas.'
+    },
+    en: {
+      navInfo: 'Info  ⓘ',
+      navSeguridad: 'Security  🛡️',
+      navCuentas: 'Accounts  👤',
+      navDispositivo: 'Device  🖥️',
+      navProblemas: 'ISSUES  ❗',
+      infoTitle: 'Information',
+      infoName: 'Antivirus Name: David Secure Engine',
+      infoVersion: 'Version: 3.14 (Open Source)',
+      infoPlatform: 'Platform: Windows, macOS, Linux',
+      infoArch: 'Architecture: Heuristic Scanning via SHA-256 Hashes',
+      infoDesc: 'David Secure is a next-generation heuristic antivirus capable of detecting and blocking threats in real time.',
+      segTitle: '| Scan',
+      segRapido: 'Quick',
+      segCompleto: 'Full',
+      segAuto: 'Let David Secure protect you automatically',
+      segReady: 'David Secure ready. Waiting for instructions...',
+      segAutoOn: '✅ Automatic protection ENABLED. Monitoring in real time.',
+      segAutoOff: '⚠️ Automatic protection DISABLED.',
+      scanStart: 'Starting {tipo} Scan...',
+      scanLoading: 'Loading virus signatures... OK',
+      scanRAM: 'Analyzing RAM memory...',
+      scanRegistry: 'Scanning System Registry...',
+      scanTemp: 'Analyzing temporary files...',
+      scanNetwork: 'Checking network connections...',
+      scanIntegrity: 'Verifying system file integrity...',
+      scanDownloads: 'Scanning recent downloads...',
+      scanProcesses: 'Analyzing background processes...',
+      scanFullHDD: 'Scanning all hard drives...',
+      scanBoot: 'Analyzing boot sectors...',
+      scanUSB: 'Checking connected USB devices...',
+      scanFinish: '{tipo} Scan completed.',
+      scanFiles: 'Files scanned: {n}',
+      scanThreats: 'Threats neutralized: {n}',
+      scanClean: '✅ The system is clean.',
+      scanFound: '🛑 Threats detected and blocked!',
+      scanSummary: 'The {tipo} scan has finished.',
+      cuentasTitle: 'Accounts Security',
+      cuentas: [
+        { name: 'Main Email', status: 'Safe', color: 'green' },
+        { name: 'Social Media', status: 'Leaked Password', color: 'red' },
+        { name: 'Online Banking', status: 'Safe (2FA Enabled)', color: 'green' },
+        { name: 'Gaming Accounts', status: 'Safe', color: 'green' }
+      ],
+      dispTitle: 'Device Security',
+      dispItems: [
+        { name: 'Operating System', value: navigator.platform },
+        { name: 'Firewall', value: 'Enabled & Blocking intrusions' },
+        { name: 'Updates', value: 'Up to date' },
+        { name: 'Disk Encryption', value: 'Enabled (AES-256)' },
+        { name: 'Open Ports', value: 'None detected' }
+      ],
+      probTitle: 'Blocked Threats',
+      probEmpty: 'No threats detected.'
+    }
+  };
+  
+  const t = () => texts[state.lang];
+  
+  // ============ HELPERS ============
+  const $ = id => document.getElementById(id);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  
+  // ============ RENDER ============
+  function render() {
+    const txt = t();
+    
+    // Botones de idioma activos
+    $('btnEs').classList.toggle('active', state.lang === 'es');
+    $('btnEn').classList.toggle('active', state.lang === 'en');
+    
+    // Navegación
+    $('navInfo').textContent = txt.navInfo;
+    $('navSeguridad').textContent = txt.navSeguridad;
+    $('navCuentas').textContent = txt.navCuentas;
+    $('navDispositivo').textContent = txt.navDispositivo;
+    $('navProblemas').textContent = txt.navProblemas;
+    
+    // Info
+    $('infoTitle').textContent = txt.infoTitle;
+    $('infoName').textContent = txt.infoName;
+    $('infoVersion').textContent = txt.infoVersion;
+    $('infoPlatform').textContent = txt.infoPlatform;
+    $('infoArch').textContent = txt.infoArch;
+    $('infoDesc').textContent = txt.infoDesc;
+    
+    // Seguridad
+    $('segTitle').textContent = txt.segTitle;
+    $('btnRapido').textContent = txt.segRapido;
+    $('btnCompleto').textContent = txt.segCompleto;
+    $('chkAutoLabel').textContent = txt.segAuto;
+    
+    // Cuentas
+    $('cuentasTitle').textContent = txt.cuentasTitle;
+    const cuentasList = $('cuentasList');
+    cuentasList.innerHTML = '';
+    txt.cuentas.forEach(c => {
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.innerHTML = `
+        <span class="row-label">${c.name}</span>
+        <span class="row-value ${c.color}">${c.status}</span>
+      `;
+      cuentasList.appendChild(div);
+    });
+    
+    // Dispositivo
+    $('dispTitle').textContent = txt.dispTitle;
+    const dispList = $('dispList');
+    dispList.innerHTML = '';
+    txt.dispItems.forEach(item => {
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.innerHTML = `
+        <span class="row-label">${item.name}</span>
+        <span class="row-value green">${item.value}</span>
+      `;
+      dispList.appendChild(div);
+    });
+    
+    // Problemas
+    $('probTitle').textContent = txt.probTitle;
+    const probList = $('probList');
+    probList.innerHTML = '';
+    if (state.threatsBlocked.length === 0) {
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.innerHTML = `<span class="row-label">${txt.probEmpty}</span>`;
+      probList.appendChild(div);
+    } else {
+      state.threatsBlocked.forEach(threat => {
+        const div = document.createElement('div');
+        div.className = 'threat-row';
+        div.innerHTML = `<span class="icon">⚠️</span><span>${threat}</span>`;
+        probList.appendChild(div);
+      });
+    }
+  }
+  
+  // ============ VISTAS ============
+  function switchView(view) {
+    state.view = view;
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    
+    $('view' + view.charAt(0).toUpperCase() + view.slice(1)).classList.add('active');
+    document.querySelector(`.nav-btn[data-view="${view}"]`).classList.add('active');
+  }
+  
+  // ============ LOG ============
+  function clearLog() {
+    $('logBox').innerHTML = '';
+  }
+  
+  function addLog(msg, cls = '') {
+    const box = $('logBox');
+    const div = document.createElement('div');
+    div.className = 'log-line ' + cls;
+    div.textContent = msg;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+  }
+  
+  // ============ ESCANEO ============
+  async function startScan(tipo) {
+    if (state.scanning) return;
+    state.scanning = true;
+    $('btnRapido').disabled = true;
+    $('btnCompleto').disabled = true;
+    clearLog();
+    
+    const txt = t();
+    const tipoLabel = tipo === 'rapido' ? txt.segRapido : txt.segCompleto;
+    
+    addLog(txt.scanStart.replace('{tipo}', tipoLabel));
+    await sleep(500);
+    addLog(txt.scanLoading, 'log-info');
+    await sleep(400);
+    
+    const pasos = [
+      txt.scanRAM, txt.scanRegistry, txt.scanTemp, txt.scanNetwork,
+      txt.scanIntegrity, txt.scanDownloads, txt.scanProcesses
+    ];
+    if (tipo === 'completo') {
+      pasos.push(txt.scanFullHDD, txt.scanBoot, txt.scanUSB);
+    }
+    
+    for (const paso of pasos) {
+      addLog(paso);
+      await sleep(450);
+    }
+    
+    // Simular detección aleatoria
+    const found = Math.random() > 0.4;
+    const numFiles = Math.floor(Math.random() * 5000) + 1000;
+    
+    addLog('----------------------------------------');
+    addLog(txt.scanFinish.replace('{tipo}', tipoLabel), 'log-info');
+    addLog(txt.scanFiles.replace('{n}', numFiles), 'log-info');
+    
+    if (found) {
+      const numThreats = Math.floor(Math.random() * 3) + 1;
+      addLog(txt.scanThreats.replace('{n}', numThreats), 'log-threat');
+      addLog(txt.scanFound, 'log-threat');
+      
+      // Añadir amenazas al reporte
+      const sampleThreats = [
+        'Trojan.Win32.Generic - Blocked',
+        'Adware.MacOS.OSX - Blocked',
+        'Spyware.Android.Agent - Blocked',
+        'Ransomware.Linux.Tesla - Blocked',
+        'Phishing.URL.Malicious - Blocked',
+        'Worm.Win32.AutoRun - Blocked',
+        'Rootkit.Hidden.Process - Blocked'
+      ];
+      for (let i = 0; i < numThreats; i++) {
+        const t = sampleThreats[Math.floor(Math.random() * sampleThreats.length)];
+        state.threatsBlocked.push(t);
+        addLog('   ⚠️ ' + t, 'log-threat');
+      }
+      render();
+    } else {
+      addLog(txt.scanThreats.replace('{n}', 0), 'log-ok');
+      addLog(txt.scanClean, 'log-ok');
+    }
+    
+    state.scanning = false;
+    $('btnRapido').disabled = false;
+    $('btnCompleto').disabled = false;
+  }
+  
+  // ============ EVENTOS ============
+  $('btnEs').addEventListener('click', () => {
+    state.lang = 'es';
+    render();
+  });
+  
+  $('btnEn').addEventListener('click', () => {
+    state.lang = 'en';
+    render();
+  });
+  
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+  
+  $('btnRapido').addEventListener('click', () => startScan('rapido'));
+  $('btnCompleto').addEventListener('click', () => startScan('completo'));
+  
+  $('chkAuto').addEventListener('change', (e) => {
+    state.autoProtection = e.target.checked;
+    const txt = t();
+    if (e.target.checked) {
+      addLog(txt.segAutoOn, 'log-ok');
+    } else {
+      addLog(txt.segAutoOff, 'log-warn');
+    }
+  });
+  
+  // ============ INICIALIZACIÓN ============
+  render();
+  switchView('seguridad');  // Vista inicial: Seguridad
+</script>
+</body>
+</html>
