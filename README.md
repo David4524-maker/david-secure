@@ -12,6 +12,16 @@
 
 > **Aviso**: David Secure es una pequeña herramienta de anti-virus, no intenta ser el escudo principal
 
+> **AVISO KIDS**: Por defecto el PIN es `1234`. Cámbialo en el código (línea `PARENTAL_PIN = "1234"`).
+
+> ⚠️ Advertencia Importante
+- El "Modo Real" solo detecta amenazas por **hash SHA-256** (EICAR de prueba) y por **patrones sospechosos** (dobles extensiones, nombres tipo keylogger).
+- **NO es un antivirus comercial.** No detectará la mayoría del malware real.
+- El usuario puede **restaurar** cualquier archivo movido a cuarentena desde la misma app.
+- Funciona en Windows, macOS y Linux. En móviles (Android/iOS) solo como concepto teórico.
+
+##  Cómo probar la cuarentena
+1. Crea un archivo llamado `virus_de_prueba.com` en tu Escritorio con este texto: `X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*` En una sola linea de codigo, gguardalo como "virus_de_prueba.com"
 ---
 
 ##  Tabla de contenido
