@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>David Secure KIDS</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  body {
+    font-family: 'Comic Sans MS', 'Fredoka', 'Arial Rounded MT Bold', sans-serif;
+    background: linear-gradient(135deg, #FFD1DC 0%, #FFB6C1 50%, #E6E6FA 100%);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    color: #333;
+    overflow-x: hidden;
+  }
+  
+  .app {
+    background: #FFD1DC;
+    border-radius: 30px;
+    box-shadow: 0 15px 40px rgba(0,0,0,0.25);
+    padding: 25px;
+    max-width: 800px;
+    width: 100%;
+    border: 5px solid #FF69B4;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .lang-btn {
+    position: absolute;
+    top: 15px;
+    right: 20px;
+    background: #FF69B4;
+    color: white;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: bold;
+    font-size: 13px;
+    transition: transform 0.2s;
+    z-index: 10;
+  }
+  .lang-btn:hover { transform: scale(1.08); }
+  
+  h1 {
+    text-align: center;
+    color: #4B0082;
+    font-size: 26px;
+    margin-bottom: 5px;
+    padding-right: 100px;
+  }
+  
+  .subtitle {
+    text-align: center;
+    color: #8A2BE2;
+    font-size: 14px;
+    margin-bottom: 20px;
+  }
+  
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  
+  .tab {
+    background: #9370DB;
+    color: white;
+    border: none;
+    padding: 10px 22px;
+    border-radius: 25px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: bold;
+    font-size: 14px;
+    transition: all 0.3s;
+  }
+  
+  .tab.active {
+    background: #FF69B4;
+    transform: scale(1.05);
+    box-shadow: 0 5px 15px rgba(255,105,180,0.5);
+  }
+  
+  .mascot {
+    text-align: center;
+    font-size: 65px;
+    margin: 5px 0;
+    animation: bounce 2s infinite;
+  }
+  
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+  
+  .status {
+    text-align: center;
+    font-size: 15px;
+    font-weight: bold;
+    color: #333;
+    margin: 10px 0;
+    min-height: 45px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 15px;
+    line-height: 1.3;
+  }
+  
+  .progress-container {
+    width: 100%;
+    max-width: 500px;
+    height: 22px;
+    background: white;
+    border-radius: 15px;
+    margin: 15px auto;
+    overflow: hidden;
+    border: 2px solid #FF69B4;
+  }
+  
+  .progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #32CD32, #7CFC00);
+    border-radius: 15px;
+    transition: width 0.3s;
+  }
+  
+  .btn-scan {
+    display: block;
+    margin: 15px auto;
+    background: #32CD32;
+    color: white;
+    border: none;
+    padding: 15px 40px;
+    border-radius: 30px;
+    font-family: inherit;
+    font-size: 18px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 6px 0 #228B22;
+    transition: all 0.1s;
+  }
+  .btn-scan:hover:not(:disabled) { transform: translateY(-2px); }
+  .btn-scan:active:not(:disabled) {
+    transform: translateY(4px);
+    box-shadow: 0 2px 0 #228B22;
+  }
+  .btn-scan:disabled {
+    background: #A9A9A9;
+    box-shadow: 0 6px 0 #777;
+    cursor: not-allowed;
+  }
+  
+  .btn-row {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin: 15px 0;
+    flex-wrap: wrap;
+  }
+  
+  .btn-secondary {
+    background: #FF6347;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 20px;
+    font-family: inherit;
+    font-weight: bold;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 4px 0 #DC143C;
+    transition: all 0.1s;
+  }
+  .btn-secondary:hover { transform: translateY(-2px); }
+  .btn-secondary:active {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 #DC143C;
+  }
+  .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+  
+  .btn-secondary.green {
+    background: #3CB371;
+    box-shadow: 0 4px 0 #2E8B57;
+  }
+  .btn-secondary.green:active { box-shadow: 0 2px 0 #2E8B57; }
+  
+  .file-picker-wrap {
+    background: white;
+    border: 2px dashed #9370DB;
+    border-radius: 15px;
+    padding: 15px;
+    margin: 10px auto;
+    max-width: 450px;
+    text-align: center;
+  }
+  
+  .file-picker-wrap label {
+    display: block;
+    cursor: pointer;
+    color: #4B0082;
+    font-weight: bold;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  
+  .file-picker-wrap input {
+    display: block;
+    margin: 0 auto;
+    font-size: 11px;
+    max-width: 100%;
+  }
+  
+  #pickerHint {
+    font-size: 11px;
+    color: #666;
+    margin-top: 8px;
+    font-style: italic;
+  }
+  
+  .log-label {
+    color: #4B0082;
+    font-weight: bold;
+    font-size: 13px;
+    margin: 15px 0 5px;
+  }
+  
+  .log {
+    background: white;
+    border: 2px solid #FF69B4;
+    border-radius: 15px;
+    padding: 12px;
+    height: 150px;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    color: #333;
+    line-height: 1.6;
+  }
+  .log::-webkit-scrollbar { width: 8px; }
+  .log::-webkit-scrollbar-thumb { background: #FF69B4; border-radius: 4px; }
+  .log::-webkit-scrollbar-track { background: #FFE4E1; border-radius: 4px; }
+  
+  .log-entry { padding: 1px 0; }
+  .log-entry.threat { color: #FF0000; font-weight: bold; }
+  .log-entry.ok { color: #228B22; font-weight: bold; }
+  .log-entry.warn { color: #FF8C00; font-weight: bold; }
+  .log-entry.info { color: #4169E1; }
+  
+  .hidden { display: none !important; }
+  
+  .emoji-rain {
+    position: absolute;
+    top: -50px;
+    font-size: 25px;
+    pointer-events: none;
+    animation: fall 3.5s linear forwards;
+    z-index: 5;
+  }
+  
+  @keyframes fall {
+    to {
+      transform: translateY(850px) rotate(360deg);
+      opacity: 0;
+    }
+  }
+  
+  @media (max-width: 500px) {
+    h1 { font-size: 20px; padding-right: 80px; }
+    .tab { padding: 8px 14px; font-size: 12px; }
+    .btn-scan { font-size: 15px; padding: 12px 25px; }
+    .mascot { font-size: 50px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+  <button class="lang-btn" id="langBtn">English 🇺🇸</button>
+  
+  <h1 id="title">🛡️ David Secure KIDS 🛡️</h1>
+  <p class="subtitle" id="subtitle">¡Tu superhéroe contra los virus!</p>
+  
+  <div class="tabs">
+    <button class="tab active" id="tabKids">🎮 Modo KIDS</button>
+    <button class="tab" id="tabReal">🔬 Modo Real</button>
+  </div>
+  
+  <!-- KIDS VIEW -->
+  <div id="kidsView">
+    <div class="mascot" id="mascot">🤖</div>
+    <div class="status" id="statusKids">Presiona el botón para empezar.</div>
+    <div class="progress-container"><div class="progress-bar" id="progKids"></div></div>
+    <button class="btn-scan" id="btnScanKids">¡ESCANEAR AHORA!</button>
+  </div>
+  
+  <!-- REAL VIEW -->
+  <div id="realView" class="hidden">
+    <div class="mascot">🔬</div>
+    <div class="status" id="statusReal">Modo Real: Analizaremos tu PC sin borrar nada.</div>
+    <div class="progress-container"><div class="progress-bar" id="progReal"></div></div>
+    
+    <div class="file-picker-wrap">
+      <label for="fileInput">📁 Selecciona una carpeta de tu PC</label>
+      <input type="file" id="fileInput" webkitdirectory directory multiple>
+      <p id="pickerHint">Selecciona una carpeta para analizar sus archivos</p>
+    </div>
+    
+    <button class="btn-scan" id="btnScanReal">🔍 ANALIZAR ARCHIVOS</button>
+    
+    <div class="btn-row">
+      <button class="btn-secondary" id="btnQuarantine">🦠 Mover a Cuarentena</button>
+      <button class="btn-secondary green" id="btnRestore">♻️ Restaurar</button>
+    </div>
+  </div>
+  
+  <div class="log-label" id="logLabel">📋 Reporte:</div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+  // ============ ESTADO GLOBAL ============
+  const state = {
+    lang: 'es',
+    view: 'kids',
+    scanning: false,
+    threats: [],
+    quarantined: [],
+  };
+
+  // ============ TEXTOS BILINGÜES ============
+  const texts = {
+    es: {
+      title: '🛡️ David Secure KIDS 🛡️',
+      subtitle: '¡Tu superhéroe contra los virus!',
+      tabKids: '🎮 Modo KIDS',
+      tabReal: '🔬 Modo Real',
+      btnScanKids: '¡ESCANEAR AHORA!',
+      btnScanKidsRunning: 'Escaneando...',
+      btnScanReal: '🔍 ANALIZAR ARCHIVOS',
+      statusReady: 'Presiona el botón para empezar.',
+      statusScanning: 'Buscando virus malos...',
+      statusClean: '¡Felicidades! Tu computadora está 100% limpia.',
+      statusFound: '¡Atrapamos un virus! Pero es de juguete, no pasa nada.',
+      statusRealReady: 'Modo Real: Analizaremos tu PC sin borrar nada.',
+      statusRealDone: 'Análisis completado. Revisa el reporte abajo.',
+      statusRealScanning: 'Analizando archivos de verdad...',
+      logLabelKids: '📋 Historial de amenazas atrapadas:',
+      logLabelReal: '📋 Reporte del Análisis Real:',
+      langBtn: 'English 🇺🇸',
+      pickerHint: 'Selecciona una carpeta para analizar sus archivos',
+      pickerHintSelected: '✅ Archivos seleccionados: ',
+      btnQuarantine: '🦠 Mover a Cuarentena',
+      btnRestore: '♻️ Restaurar',
+      steps: [
+        'Revisando la carpeta de Descargas...',
+        'Buscando en el Escritorio...',
+        'Analizando la memoria RAM...',
+        'Revisando archivos del sistema...',
+        'Limpiando la papelera...',
+        'Buscando virus escondidos...',
+      ],
+      realSteps: [
+        'Analizando nombres de archivos...',
+        'Buscando extensiones dobles (.pdf.exe)...',
+        'Verificando archivos sospechosos...',
+        'Revisando posibles amenazas...',
+      ],
+      noFiles: '⚠️ No seleccionaste ninguna carpeta. Usando análisis simulado.',
+      threatsFound: '🛑 Amenazas encontradas: ',
+      clean: '✅ No se encontraron amenazas. ¡Tu PC está limpia!',
+      suspicious: '⚠️ Archivo sospechoso: ',
+      scanningFile: '🔍 Analizando: ',
+      filesScanned: '📊 Archivos analizados: ',
+      quarantineEmpty: 'No hay amenazas para mover a cuarentena.',
+      quarantineDone: '✅ ¡Archivo(s) en cuarentena!',
+      restoreEmpty: 'La cuarentena está vacía.',
+      restoreDone: '✅ ¡Archivo(s) restaurado(s)!',
+      confirmQuarantine: 'Se moverán los archivos detectados a cuarentena.\n\n¿Continuar?',
+      confirmRestore: 'Se restaurarán los archivos de la cuarentena.\n\n¿Continuar?',
+      kidDone: '📋 Escaneo KIDS finalizado.',
+      realDone: '📋 Escaneo REAL finalizado (solo lectura).',
+      warningEicar: '🧪 Archivo EICAR detectado: ',
+      historyEmpty: 'Historial vacío. ¡Empieza un escaneo!',
+      realHint: 'Selecciona una carpeta y pulsa ANALIZAR.',
+    },
+    en: {
+      title: '🛡️ David Secure KIDS 🛡️',
+      subtitle: 'Your superhero against viruses!',
+      tabKids: '🎮 KIDS Mode',
+      tabReal: '🔬 Real Mode',
+      btnScanKids: 'SCAN NOW!',
+      btnScanKidsRunning: 'Scanning...',
+      btnScanReal: '🔍 ANALYZE FILES',
+      statusReady: 'Press the button to start.',
+      statusScanning: 'Looking for bad viruses...',
+      statusClean: 'Congratulations! Your computer is 100% clean.',
+      statusFound: "We caught a virus! But it's a toy one, don't worry.",
+      statusRealReady: "Real Mode: We'll scan your PC without deleting anything.",
+      statusRealDone: 'Scan completed. Check the report below.',
+      statusRealScanning: 'Analyzing real files...',
+      logLabelKids: '📋 Caught threat history:',
+      logLabelReal: '📋 Real Scan Report:',
+      langBtn: 'Español 🇲🇽',
+      pickerHint: 'Select a folder to analyze its files',
+      pickerHintSelected: '✅ Files selected: ',
+      btnQuarantine: '🦠 Move to Quarantine',
+      btnRestore: '♻️ Restore',
+      steps: [
+        'Checking Downloads folder...',
+        'Searching the Desktop...',
+        'Analyzing RAM memory...',
+        'Checking system files...',
+        'Cleaning recycle bin...',
+        'Looking for hidden viruses...',
+      ],
+      realSteps: [
+        'Analyzing file names...',
+        'Looking for double extensions (.pdf.exe)...',
+        'Checking suspicious files...',
+        'Reviewing possible threats...',
+      ],
+      noFiles: '⚠️ No folder selected. Using simulated scan.',
+      threatsFound: '🛑 Threats found: ',
+      clean: '✅ No threats found. Your PC is clean!',
+      suspicious: '⚠️ Suspicious file: ',
+      scanningFile: '🔍 Analyzing: ',
+      filesScanned: '📊 Files analyzed: ',
+      quarantineEmpty: 'No threats to quarantine.',
+      quarantineDone: '✅ File(s) quarantined!',
+      restoreEmpty: 'Quarantine is empty.',
+      restoreDone: '✅ File(s) restored!',
+      confirmQuarantine: 'Detected files will be moved to quarantine.\n\nContinue?',
+      confirmRestore: 'Files will be restored from quarantine.\n\nContinue?',
+      kidDone: '📋 KIDS scan complete.',
+      realDone: '📋 REAL scan complete (read-only).',
+      warningEicar: '🧪 EICAR file detected: ',
+      historyEmpty: 'Empty history. Start a scan!',
+      realHint: 'Select a folder and press ANALYZE.',
+    }
+  };
+
+  // ============ REFERENCIAS DOM ============
+  const $ = id => document.getElementById(id);
+  const app = $('app');
+  const langBtn = $('langBtn');
+  const titleEl = $('title');
+  const subtitleEl = $('subtitle');
+  const tabKidsEl = $('tabKids');
+  const tabRealEl = $('tabReal');
+  const kidsView = $('kidsView');
+  const realView = $('realView');
+  const mascotEl = $('mascot');
+  const statusKids = $('statusKids');
+  const statusReal = $('statusReal');
+  const progKids = $('progKids');
+  const progReal = $('progReal');
+  const btnScanKids = $('btnScanKids');
+  const btnScanReal = $('btnScanReal');
+  const btnQuarantine = $('btnQuarantine');
+  const btnRestore = $('btnRestore');
+  const logEl = $('log');
+  const logLabel = $('logLabel');
+  const fileInput = $('fileInput');
+  const pickerHint = $('pickerHint');
+
+  // ============ HELPERS ============
+  const t = () => texts[state.lang];
+  const sleep = ms => new Promise(res => setTimeout(res, ms));
+
+  function addLog(msg, type = '') {
+    const div = document.createElement('div');
+    div.className = 'log-entry ' + type;
+    div.textContent = msg;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function clearLog() {
+    logEl.innerHTML = '';
+  }
+
+  function emojiRain(emoji) {
+    for (let i = 0; i < 18; i++) {
+      const el = document.createElement('div');
+      el.className = 'emoji-rain';
+      el.textContent = emoji;
+      el.style.left = Math.random() * 90 + '%';
+      el.style.animationDelay = (Math.random() * 0.6) + 's';
+      el.style.fontSize = (18 + Math.random() * 20) + 'px';
+      app.appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+  }
+
+  // ============ IDIOMA ============
+  function updateTexts() {
+    const txt = t();
+    titleEl.textContent = txt.title;
+    subtitleEl.textContent = txt.subtitle;
+    tabKidsEl.textContent = txt.tabKids;
+    tabRealEl.textContent = txt.tabReal;
+    langBtn.textContent = txt.langBtn;
+    btnQuarantine.textContent = txt.btnQuarantine;
+    btnRestore.textContent = txt.btnRestore;
+    btnScanReal.textContent = txt.btnScanReal;
+    
+    if (state.view === 'kids') {
+      if (!state.scanning) statusKids.textContent = txt.statusReady;
+      btnScanKids.textContent = state.scanning ? txt.btnScanKidsRunning : txt.btnScanKids;
+      logLabel.textContent = txt.logLabelKids;
+    } else {
+      if (!state.scanning) statusReal.textContent = txt.statusRealReady;
+      logLabel.textContent = txt.logLabelReal;
+      if (fileInput.files && fileInput.files.length > 0) {
+        pickerHint.textContent = txt.pickerHintSelected + fileInput.files.length;
+      } else {
+        pickerHint.textContent = txt.pickerHint;
+      }
+    }
+  }
+
+  // ============ VISTAS ============
+  function switchView(view) {
+    state.view = view;
+    if (view === 'kids') {
+      kidsView.classList.remove('hidden');
+      realView.classList.add('hidden');
+      tabKidsEl.classList.add('active');
+      tabRealEl.classList.remove('active');
+      clearLog();
+      addLog('   ' + t().historyEmpty, 'info');
+    } else {
+      kidsView.classList.add('hidden');
+      realView.classList.remove('hidden');
+      tabKidsEl.classList.remove('active');
+      tabRealEl.classList.add('active');
+      clearLog();
+      addLog('   ' + t().realHint, 'info');
+    }
+    updateTexts();
+  }
+
+  // ============ ESCANEO KIDS (SIMULADO) ============
+  async function startKidsScan() {
+    if (state.scanning) return;
+    state.scanning = true;
+    btnScanKids.disabled = true;
+    btnScanKids.textContent = t().btnScanKidsRunning;
+    progKids.style.width = '0%';
+    clearLog();
+
+    const steps = t().steps;
+    const total = steps.length;
+    
+    for (let i = 0; i < total; i++) {
+      statusKids.textContent = '🔍 ' + steps[i];
+      await sleep(650);
+      progKids.style.width = ((i + 1) / total * 100) + '%';
+    }
+
+    await sleep(400);
+    const isClean = Math.random() > 0.5;
+    if (isClean) {
+      statusKids.textContent = t().statusClean;
+      mascotEl.textContent = '😊';
+      addLog('✅ ' + t().statusClean, 'ok');
+      emojiRain('✨');
+    } else {
+      statusKids.textContent = t().statusFound;
+      mascotEl.textContent = '😲';
+      addLog('⚠️ ' + t().statusFound, 'warn');
+      emojiRain('🦠');
+    }
+
+    addLog('');
+    addLog(t().kidDone, 'info');
+
+    state.scanning = false;
+    btnScanKids.disabled = false;
+    btnScanKids.textContent = t().btnScanKids;
+  }
+
+  // ============ ESCANEO REAL (ANÁLISIS DE NOMBRES) ============
+  const DOUBLE_EXT = ['.pdf.exe', '.docx.exe', '.jpg.exe', '.txt.exe',
+                      '.xls.exe', '.png.exe', '.mp3.exe', '.mp4.exe',
+                      '.pdf.bat', '.jpg.bat'];
+  const BAD_NAMES = ['keylogger', 'mimikatz', 'netcat', 'trojan',
+                     'ransomware', 'backdoor', 'virus', 'malware'];
+  const EICAR_NAMES = ['eicar'];
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) {
+      pickerHint.textContent = t().pickerHintSelected + fileInput.files.length;
+    } else {
+      pickerHint.textContent = t().pickerHint;
+    }
+  });
+
+  async function startRealScan() {
+    if (state.scanning) return;
+    state.scanning = true;
+    btnScanReal.disabled = true;
+    btnQuarantine.disabled = true;
+    btnRestore.disabled = true;
+    progReal.style.width = '0%';
+    clearLog();
+    state.threats = [];
+
+    const files = fileInput.files;
+    const txt = t();
+
+    if (!files || files.length === 0) {
+      // Simulación si no hay archivos
+      addLog(txt.noFiles, 'warn');
+      const steps = txt.realSteps;
+      for (let i = 0; i < steps.length; i++) {
+        statusReal.textContent = '🔍 ' + steps[i];
+        await sleep(750);
+        progReal.style.width = ((i + 1) / steps.length * 100) + '%';
+      }
+      if (Math.random() > 0.5) {
+        addLog(txt.clean, 'ok');
+        statusReal.textContent = txt.clean;
+        emojiRain('✨');
+      } else {
+        const fakeThreat = 'virus_de_prueba.pdf.exe';
+        state.threats.push({ name: fakeThreat, reason: 'Double extension' });
+        addLog(txt.threatsFound + '1', 'threat');
+        addLog('   → ' + fakeThreat, 'threat');
+        statusReal.textContent = txt.statusRealDone;
+        emojiRain('🦠');
+      }
+    } else {
+      // Escaneo real de nombres de archivos
+      const total = files.length;
+      const maxCheck = Math.min(total, 500);
+      statusReal.textContent = txt.statusRealScanning;
+
+      for (let i = 0; i < maxCheck; i++) {
+        const f = files[i];
+        const nameLower = f.name.toLowerCase();
+        const path = f.webkitRelativePath || f.name;
+
+        if (i % 15 === 0) {
+          statusReal.textContent = txt.scanningFile + f.name.substring(0, 45);
+          await sleep(15);
+        }
+        progReal.style.width = ((i + 1) / maxCheck * 100) + '%';
+
+        // 1. EICAR por nombre
+        if (EICAR_NAMES.some(n => nameLower.includes(n))) {
+          state.threats.push({ name: f.name, reason: 'EICAR-Test-File' });
+          addLog(txt.warningEicar + path, 'threat');
+          continue;
+        }
+        // 2. Doble extensión
+        if (DOUBLE_EXT.some(ext => nameLower.endsWith(ext))) {
+          state.threats.push({ name: f.name, reason: 'Double extension' });
+          addLog(txt.suspicious + path, 'warn');
+          continue;
+        }
+        // 3. Nombre sospechoso
+        if (BAD_NAMES.some(bad => nameLower.includes(bad)) &&
+            (nameLower.endsWith('.exe') || nameLower.endsWith('.bat') ||
+             nameLower.endsWith('.sh') || nameLower.endsWith('.py'))) {
+          state.threats.push({ name: f.name, reason: 'Suspicious name' });
+          addLog('⚠️ ' + path, 'warn');
+        }
+      }
+
+      addLog('');
+      addLog(txt.filesScanned + maxCheck + ' / ' + total, 'info');
+      
+      if (state.threats.length === 0) {
+        addLog(txt.clean, 'ok');
+        statusReal.textContent = txt.clean;
+        emojiRain('✨');
+      } else {
+        addLog(txt.threatsFound + state.threats.length, 'threat');
+        statusReal.textContent = txt.threatsFound + state.threats.length;
+        emojiRain('🦠');
+      }
+    }
+
+    addLog('');
+    addLog(txt.realDone, 'info');
+    progReal.style.width = '100%';
+    
+    state.scanning = false;
+    btnScanReal.disabled = false;
+    btnQuarantine.disabled = false;
+    btnRestore.disabled = false;
+  }
+
+  // ============ CUARENTENA (SIMULADA) ============
+  function doQuarantine() {
+    if (state.threats.length === 0) {
+      alert(t().quarantineEmpty);
+      return;
+    }
+    if (!confirm(t().confirmQuarantine)) return;
+    
+    const moved = [...state.threats];
+    state.quarantined = state.quarantined.concat(moved);
+    moved.forEach(th => {
+      addLog('🦠 → ' + th.name + '  [CUARENTENA]', 'threat');
+    });
+    state.threats = [];
+    emojiRain('🔒');
+    setTimeout(() => alert(t().quarantineDone), 300);
+  }
+
+  function doRestore() {
+    if (state.quarantined.length === 0) {
+      alert(t().restoreEmpty);
+      return;
+    }
+    if (!confirm(t().confirmRestore)) return;
+    
+    state.quarantined.forEach(th => {
+      addLog('♻️ → ' + th.name + '  [RESTAURADO]', 'ok');
+    });
+    state.quarantined = [];
+    emojiRain('✨');
+    setTimeout(() => alert(t().restoreDone), 300);
+  }
+
+  // ============ EVENTOS ============
+  langBtn.addEventListener('click', () => {
+    state.lang = state.lang === 'es' ? 'en' : 'es';
+    updateTexts();
+  });
+
+  tabKidsEl.addEventListener('click', () => switchView('kids'));
+  tabRealEl.addEventListener('click', () => switchView('real'));
+  btnScanKids.addEventListener('click', startKidsScan);
+  btnScanReal.addEventListener('click', startRealScan);
+  btnQuarantine.addEventListener('click', doQuarantine);
+  btnRestore.addEventListener('click', doRestore);
+
+  // ============ INICIALIZACIÓN ============
+  updateTexts();
+  clearLog();
+  addLog('   ' + t().historyEmpty, 'info');
+</script>
+</body>
+</html>
