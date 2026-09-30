@@ -1,7 +1,7 @@
 """
 David Secure - Antivirus Engine
 ================================
-v5.0.1 — Versión corregida con 70 mejoras sobre la v4.0.0.
+v5.0.3 — Mensajes honestos de log + logo simplificado (sin la V naranja).
 Proyecto educativo / de portafolio.
 
 Modo GUI:   python david_secure.py
@@ -11,7 +11,6 @@ Modo CLI:   python david_secure.py --scan rapido
 
 from __future__ import annotations
 
-# [M01] Imports reorganizados y nuevos
 import argparse
 import concurrent.futures
 import csv
@@ -52,7 +51,7 @@ except ImportError:
 # Constantes y rutas
 # --------------------------------------------------------------------------- #
 APP_NAME = "David Secure"
-APP_VERSION = "5.0.1"
+APP_VERSION = "5.0.3"
 
 APP_DIR = Path.home() / ".david_secure"
 CONFIG_PATH = APP_DIR / "config.json"
@@ -262,9 +261,12 @@ def save_config(config: dict) -> None:
 def default_signatures() -> list:
     return [
         {"hash": "44d88612fea8a8f36de82e1278abb02f", "algo": "md5",
-         "name": "EICAR Test File", "severity": "test"},
+         "name": "EICAR Test File (archivo estándar de prueba, no es un virus real)",
+         "severity": "test"},
         {"hash": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0",
-         "algo": "sha256", "name": "EICAR Test File", "severity": "test"},
+         "algo": "sha256",
+         "name": "EICAR Test File (archivo estándar de prueba, no es un virus real)",
+         "severity": "test"},
         {"hash": "5d41402abc4b2a76b9719d911017c592", "algo": "md5",
          "name": "Malware.Simulado.1", "severity": "medium"},
         {"hash": "7d793037a0760186574b0282f2f435e7", "algo": "md5",
@@ -646,7 +648,7 @@ class DavidSecureApp:
         self.build_ui()
 
         if psutil is None:
-            self.log("[Aviso] psutil no instalado: protección en tiempo real deshabilitada.")
+            self.log("[Aviso] psutil no instalado: monitoreo de procesos deshabilitado.")
         else:
             threading.Thread(target=self.background_monitor, daemon=True).start()
 
@@ -750,6 +752,8 @@ class DavidSecureApp:
         self.show_frame("seguridad")
 
     def _draw_logo(self, canvas: tk.Canvas, canvas_width: int, canvas_height: int):
+        """Dibuja el ícono (D roja + cuadro amarillo) y el texto 'David Secure'.
+        Ya no incluye la 'V' naranja que solía ir encima."""
         import tkinter.font as tkfont
         icon_w, icon_h = 40, 60
         gap_icon_text = 14
@@ -781,12 +785,12 @@ class DavidSecureApp:
         def m(x, y):
             return (ix + (x - 30), iy + (y - 20))
 
+        # Ícono: solo las dos formas base (rojo + amarillo).
+        # La 'V' naranja fue eliminada para simplificar el logo.
         canvas.create_polygon(*m(30, 20), *m(50, 20), *m(50, 80), *m(30, 60),
                               fill="#FF0000", outline="")
         canvas.create_polygon(*m(50, 20), *m(70, 20), *m(70, 60), *m(50, 80),
                               fill="#FFFF00", outline="")
-        canvas.create_polygon(*m(58, 35), *m(68, 35), *m(55, 70), *m(45, 35),
-                              *m(52, 35), *m(55, 55), fill="#FF7F00", outline="")
 
         x_david = ix + icon_w + gap_icon_text
         canvas.create_text(x_david, text_y, text="David", fill=self.colors["fg_text"],
@@ -911,7 +915,7 @@ class DavidSecureApp:
                                       cursor="hand2", command=self.save_current_profile)
         self.btn_profile.pack(side="left", padx=3)
 
-        chk_auto = tk.Checkbutton(self.content_frame, text="Protección automática en tiempo real",
+        chk_auto = tk.Checkbutton(self.content_frame, text="Monitoreo de procesos en segundo plano",
                                    variable=self.autoproteccion_activa, bg=c["bg_main"],
                                    fg=c["fg_text"], font=("Arial", 13),
                                    activebackground=c["bg_main"], selectcolor="black",
@@ -1526,14 +1530,12 @@ th{{background:#3131A1;color:white}}</style></head><body>
     # Métodos auxiliares de Configuración
     # ------------------------------------------------------------------- #
     def toggle_theme(self):
-        """Alterna entre tema claro y oscuro."""
         self.config["theme"] = "dark" if self.config.get("theme") == "light" else "light"
         save_config(self.config)
         self.build_ui()
         self.show_frame("configuracion")
 
     def add_exclusion(self):
-        """Abre diálogo para añadir una carpeta a las exclusiones."""
         carpeta = filedialog.askdirectory(title="Selecciona carpeta a excluir del escaneo")
         if not carpeta:
             return
@@ -1544,7 +1546,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
             self.excl_listbox.insert("end", carpeta)
 
     def remove_exclusion(self):
-        """Quita la exclusión seleccionada de la lista."""
         sel = self.excl_listbox.curselection()
         if not sel:
             return
@@ -1556,7 +1557,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
         self.excl_listbox.delete(sel[0])
 
     def import_signatures(self):
-        """Importa firmas desde un archivo JSON externo."""
         ruta = filedialog.askopenfilename(
             title="Selecciona archivo de firmas JSON",
             filetypes=[("JSON", "*.json"), ("Todos", "*.*")]
@@ -1571,13 +1571,11 @@ th{{background:#3131A1;color:white}}</style></head><body>
             messagebox.showerror(APP_NAME, f"No se pudo importar el archivo de firmas: {e}")
 
     def clear_logs(self):
-        """Limpia el buffer de logs en memoria y en pantalla."""
         if messagebox.askyesno(APP_NAME, "¿Vaciar el historial de logs en pantalla?"):
             self.log_buffer.clear()
             self.show_frame("seguridad")
 
     def reset_config(self):
-        """Restablece la configuración a los valores por defecto."""
         if messagebox.askyesno(APP_NAME,
                                 "¿Restablecer toda la configuración a los valores por defecto?"):
             self.config = default_config()
@@ -1670,7 +1668,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
         messagebox.showinfo(APP_NAME, f"Perfil '{nombre}' guardado.")
 
     # ------------------------------------------------------------------- #
-    # Protección en tiempo real
+    # Monitoreo de procesos
     # ------------------------------------------------------------------- #
     def _refresh_status_indicator(self):
         color = self.colors["accent_ok"] if self.monitoring else self.colors["accent_warn"]
@@ -1685,9 +1683,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
             self.monitoring = self.autoproteccion_activa.get()
         self._refresh_status_indicator()
         if self.monitoring:
-            messagebox.showinfo(APP_NAME, "Protección ACTIVADA.")
+            messagebox.showinfo(APP_NAME, "Monitoreo de procesos ACTIVADO.")
         else:
-            messagebox.showwarning(APP_NAME, "Protección DESACTIVADA.")
+            messagebox.showwarning(APP_NAME, "Monitoreo de procesos DESACTIVADO.")
 
     def log(self, mensaje: str):
         self.logger.info(mensaje)
@@ -1947,7 +1945,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         errores += 1
                     elif res["threat"]:
                         threat = res["threat"]
-                        self.log(f"¡ALERTA! {threat['name']} → {res['path']}")
+                        self.log(f"Amenaza detectada: {threat['name']} → {res['path']}")
                         registro = self._poner_en_cuarentena(
                             res["path"], threat["name"], res["hashes"] or {})
                         if registro:
@@ -2048,6 +2046,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
         return registro
 
     def background_monitor(self):
+        """Monitoreo pasivo de procesos y conexiones (solo avisa, no actúa)."""
         procesos_sospechosos = (set(PROCESOS_SOSPECHOSOS_DEFAULT)
                                  - set(self.config.get("process_whitelist", [])))
         ultimo_aviso = 0.0
@@ -2060,16 +2059,16 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         info = proc.info
                         proc_name = (info["name"] or "").lower()
                         if proc_name in procesos_sospechosos and time.time() - ultimo_aviso > 10:
-                            self.log(f"¡BLOQUEO EN TIEMPO REAL! Proceso: {proc_name}")
+                            self.log(f"Aviso: proceso en lista de vigilancia → {proc_name}")
                             if self.config.get("notify_on_threat", True):
-                                send_notification(APP_NAME,
-                                                   f"Proceso sospechoso: {proc_name}")
+                                send_notification(APP_NAME, f"Aviso: {proc_name}")
                             ultimo_aviso = time.time()
 
                         cmdline = " ".join(info.get("cmdline") or []).lower()
                         if any(arg in cmdline for arg in ARGUMENTOS_SOSPECHOSOS):
                             if time.time() - ultimo_aviso > 10:
-                                self.log(f"¡Cmdline sospechoso! {proc_name}: {cmdline[:80]}")
+                                self.log(f"Aviso: argumentos inusuales en {proc_name}: "
+                                          f"{cmdline[:80]}")
                                 ultimo_aviso = time.time()
 
                         parent_pid = info.get("ppid")
@@ -2080,7 +2079,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
                                     and proc_name in ("cmd.exe", "powershell.exe",
                                                        "wscript.exe", "cscript.exe")):
                                 if time.time() - ultimo_aviso > 10:
-                                    self.log(f"¡Cadena sospechosa! {parent_name} → {proc_name}")
+                                    self.log(f"Aviso: {parent_name} lanzó {proc_name}")
                                     ultimo_aviso = time.time()
 
                         known_parents[info["pid"]] = proc_name
@@ -2092,7 +2091,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         if conn.status == "ESTABLISHED" and conn.raddr:
                             if conn.raddr.port in (6667, 6668, 31337, 1337, 4444):
                                 if time.time() - ultimo_aviso > 10:
-                                    self.log(f"Conexión sospechosa a {conn.raddr}")
+                                    self.log(f"Aviso: conexión a puerto inusual → {conn.raddr}")
                                     ultimo_aviso = time.time()
                 except (psutil.AccessDenied, AttributeError):
                     pass
