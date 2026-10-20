@@ -1,12 +1,21 @@
 """
-David Secure - Antivirus Engine
-================================
-v5.0.3 — Mensajes honestos de log + logo simplificado (sin la V naranja).
-Proyecto educativo / de portafolio.
+David Secure - Antivirus Engine (GUI)
+=====================================
+v6.2.0 — Detección conservadora, sin falsos positivos.
+
+Cambios v6.2.0:
+  • Scripts requieren 2+ patrones (1 solo → solo reporte, no cuarentena).
+  • Archivos empaquetados (alta entropía) YA NO son amenaza.
+  • ZIP normales con EXE dentro YA NO son amenaza (instaladores legítimos).
+  • Validación PE/ELF real (cabecera MZ + estructura completa).
+  • Firmas falsas (MD5 de "hello") eliminadas + migración automática.
+  • Doble extensión solo es amenaza si el contenido es ejecutable real.
+  • Campo "suspicious" separado de "threat" (reporta sin cuarentena).
 
 Modo GUI:   python david_secure.py
 Modo CLI:   python david_secure.py --scan rapido
             python david_secure.py --scan completo --path "/ruta" --json
+            python david_secure.py --url "http://..."
 """
 
 from __future__ import annotations
@@ -22,23 +31,26 @@ import logging.handlers
 import math
 import os
 import platform
+import queue
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
-import urllib.request
-import urllib.error
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable, Optional
 
 try:
@@ -51,7 +63,7 @@ except ImportError:
 # Constantes y rutas
 # --------------------------------------------------------------------------- #
 APP_NAME = "David Secure"
-APP_VERSION = "5.0.3"
+APP_VERSION = "6.2.0"
 
 APP_DIR = Path.home() / ".david_secure"
 CONFIG_PATH = APP_DIR / "config.json"
@@ -61,10 +73,13 @@ SIGNATURES_PATH = APP_DIR / "signatures.json"
 SIGNATURES_BACKUP_PATH = APP_DIR / "signatures.backup.json"
 SCAN_CACHE_PATH = APP_DIR / "scan_cache.json"
 SCAN_PROFILES_PATH = APP_DIR / "scan_profiles.json"
+URL_BLOCKLIST_PATH = APP_DIR / "url_blocklist.json"
+URL_HISTORY_PATH = APP_DIR / "url_history.json"
 PLUGINS_DIR = APP_DIR / "plugins"
 LOG_DIR = APP_DIR / "logs"
 QUARANTINE_DIR = Path.home() / "DavidSecure_Quarantine"
 LOCK_PATH = APP_DIR / "app.lock"
+HASH_WHITELIST_PATH = APP_DIR / "hash_whitelist.json"
 
 DEFAULT_EXCLUDED_DIRS = {
     ".git", "node_modules", "__pycache__", "venv", ".venv",
@@ -82,6 +97,8 @@ ARGUMENTOS_SOSPECHOSOS = {"sekurlsa::", "lsadump::", "-lvp", "-le", "exec cmd.ex
 
 EXEC_EXTS = {".exe", ".dll", ".scr", ".bat", ".cmd", ".com", ".pif", ".vbs",
              ".js", ".jse", ".wsf", ".ps1", ".hta", ".jar", ".msi"}
+
+# Patrones de script — 2+ = amenaza; 1 solo = sospechoso (script de admin legítimo)
 SCRIPT_PATTERNS = [
     (re.compile(rb"Invoke-Expression\s*\(", re.I), "PowerShell.InvokeExpression"),
     (re.compile(rb"IEX\s*\(", re.I), "PowerShell.IEX"),
@@ -91,15 +108,57 @@ SCRIPT_PATTERNS = [
     (re.compile(rb"CreateObject\s*\(\s*[\"']WScript", re.I), "Script.WScriptCreateObject"),
     (re.compile(rb"eval\s*\(\s*base64_decode", re.I), "PHP.EvalBase64"),
     (re.compile(rb"document\.write\s*\(\s*unescape", re.I), "JS.UnescapeWrite"),
+    (re.compile(rb"mshta\s+http", re.I), "Script.MshtaRemote"),
+    (re.compile(rb"powershell(.exe)?\s+(-\w+\s+)*-e(nc(odedcommand)?)?\s", re.I),
+     "Script.PowerShellEncoded"),
 ]
+
 HEADER_PATTERNS = [
     (b"MZ", "PE/EXE"),
     (b"\x7fELF", "ELF"),
     (b"PK\x03\x04", "ZIP"),
 ]
-ARCHIVE_EXTS = {".zip", ".jar", ".apk", ".docx", ".xlsx", ".pptx"}
 
-HASH_WHITELIST_PATH = APP_DIR / "hash_whitelist.json"
+# Solo inspeccionamos contenido de estos formatos (ZIP normales NO)
+ARCHIVE_EXTS_OFFICE = {".docx", ".xlsx", ".pptx"}
+ARCHIVE_EXTS_JVM = {".jar", ".apk"}
+
+# Firmas falsas que se distribuyeron por error en v6.0.0 → migrar
+_KNOWN_BAD_FAKE_HASHES = {
+    "5d41402abc4b2a76b9719d911017c592",  # MD5("hello")
+    "7d793037a0760186574b0282f2f435e7",  # MD5("hello\n")
+}
+
+# --- Listas de heurística de URL ------------------------------------------- #
+URL_PHISHING_KEYWORDS = (
+    "login", "signin", "sign-in", "verify", "verification", "account",
+    "update", "confirm", "secure", "security", "banking", "password",
+    "credential", "wallet", "recovery", "unlock", "suspend", "limited",
+    "urgent", "alert", "warning", "billing", "invoice", "payment",
+)
+URL_BRAND_NAMES = (
+    "paypal", "google", "microsoft", "apple", "amazon", "netflix",
+    "facebook", "instagram", "whatsapp", "binance", "coinbase",
+    "dropbox", "outlook", "office365", "icloud", "steam", "roblox",
+)
+URL_SHORTENERS = (
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
+    "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at", "rb.gy",
+    "shorte.st", "adf.ly", "bc.vc", "t.ly", "v.gd",
+)
+URL_SUSPICIOUS_TLDS = {
+    ".tk", ".ml", ".ga", ".cf", ".gq", ".top", ".xyz", ".work",
+    ".click", ".link", ".loan", ".download", ".review", ".country",
+    ".kim", ".men", ".party", ".racing", ".science", ".stream",
+    ".gdn", ".bid", ".date", ".faith", ".win", ".accountant",
+    ".cricket", ".ninja", ".rocks", ".wang", ".zip",
+}
+URL_SUSPICIOUS_DOWNLOAD_EXTS = (
+    ".exe", ".scr", ".bat", ".cmd", ".vbs", ".js", ".jar", ".msi",
+    ".ps1", ".hta", ".com", ".pif", ".dll", ".apk", ".dmg", ".iso",
+)
+URL_REDIRECT_PARAMS = ("url=", "redirect=", "next=", "goto=", "redir=",
+                       "return=", "continue=", "target=")
 
 TRANSLATIONS = {
     "es": {
@@ -109,6 +168,9 @@ TRANSLATIONS = {
         "btn_quick": "Rápido", "btn_full": "Completo", "btn_custom": "Personalizado",
         "btn_stop": "Detener escaneo", "status_protected": "Protegido",
         "status_unprotected": "Desprotegido", "scan_running": "Escaneando...",
+        "url_label": "🌐 Analizar URL:",
+        "url_btn": "🔍 Analizar",
+        "url_clear": "Limpiar",
     },
     "en": {
         "menu_info": "Info", "menu_seguridad": "Security", "menu_cuentas": "Accounts",
@@ -117,6 +179,9 @@ TRANSLATIONS = {
         "btn_quick": "Quick", "btn_full": "Full", "btn_custom": "Custom",
         "btn_stop": "Stop scan", "status_protected": "Protected",
         "status_unprotected": "Unprotected", "scan_running": "Scanning...",
+        "url_label": "🌐 Analyze URL:",
+        "url_btn": "🔍 Analyze",
+        "url_clear": "Clear",
     },
 }
 
@@ -127,6 +192,7 @@ THEMES = {
         "accent_ok": "#66FF33", "accent_warn": "#FF4D4D",
         "accent_info": "#80D4FF", "accent_seg": "#FF7F00",
         "log_bg": "white", "log_fg": "black",
+        "url_ok": "#66FF33", "url_warn": "#FFB74D", "url_bad": "#FF4D4D",
     },
     "dark": {
         "bg_main": "#101820", "bg_nav": "#1B2430", "bg_card": "#1E2A38",
@@ -134,6 +200,7 @@ THEMES = {
         "accent_ok": "#4CD964", "accent_warn": "#FF6B6B",
         "accent_info": "#4FC3F7", "accent_seg": "#FFB74D",
         "log_bg": "#0B0F14", "log_fg": "#B8F397",
+        "url_ok": "#4CD964", "url_warn": "#FFB74D", "url_bad": "#FF6B6B",
     },
 }
 
@@ -205,19 +272,6 @@ def save_json_with_backup(path: Path, backup_path: Path, data) -> bool:
     return save_json(path, data)
 
 
-def load_config_with_migration() -> dict:
-    cfg = default_config()
-    loaded = load_json(CONFIG_PATH, None)
-    if loaded is None:
-        loaded = load_json(CONFIG_BACKUP_PATH, {})
-    if isinstance(loaded, dict):
-        for k in list(loaded.keys()):
-            if k in cfg:
-                cfg[k] = loaded[k]
-        cfg["_version"] = APP_VERSION
-    return cfg
-
-
 def default_config() -> dict:
     return {
         "theme": "light",
@@ -243,34 +297,47 @@ def default_config() -> dict:
         "hash_whitelist": [],
         "scheduled_scan": None,
         "self_integrity": True,
-        "entropy_threshold": 7.2,
+        "entropy_threshold": 7.2,  # DEPRECATED: ya no se usa para detección
         "notify_on_threat": True,
         "quarantine_password": None,
+        "url_check_enabled": True,
+        "url_auto_quarantine": True,
+        "url_history_limit": 500,
+        "silent_notifications": False,
+        "auto_scroll_log": True,
         "_version": APP_VERSION,
     }
 
 
 def load_config() -> dict:
-    return load_config_with_migration()
+    cfg = default_config()
+    loaded = load_json(CONFIG_PATH, None)
+    if loaded is None:
+        loaded = load_json(CONFIG_BACKUP_PATH, {})
+    if isinstance(loaded, dict):
+        for k in list(loaded.keys()):
+            if k in cfg:
+                cfg[k] = loaded[k]
+        cfg["_version"] = APP_VERSION
+    return cfg
 
 
 def save_config(config: dict) -> None:
     save_json_with_backup(CONFIG_PATH, CONFIG_BACKUP_PATH, config)
 
 
+# --------------------------------------------------------------------------- #
+# Firmas — SOLO hashes reales
+# --------------------------------------------------------------------------- #
 def default_signatures() -> list:
     return [
+        # EICAR estándar (archivo de prueba oficial de la industria antivirus)
         {"hash": "44d88612fea8a8f36de82e1278abb02f", "algo": "md5",
-         "name": "EICAR Test File (archivo estándar de prueba, no es un virus real)",
-         "severity": "test"},
+         "name": "EICAR-Test-File", "severity": "test"},
+        {"hash": "3395856ce81f2b7382dee72602f798b642f14140", "algo": "sha1",
+         "name": "EICAR-Test-File", "severity": "test"},
         {"hash": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0",
-         "algo": "sha256",
-         "name": "EICAR Test File (archivo estándar de prueba, no es un virus real)",
-         "severity": "test"},
-        {"hash": "5d41402abc4b2a76b9719d911017c592", "algo": "md5",
-         "name": "Malware.Simulado.1", "severity": "medium"},
-        {"hash": "7d793037a0760186574b0282f2f435e7", "algo": "md5",
-         "name": "Trojan.Generic.Test", "severity": "high"},
+         "algo": "sha256", "name": "EICAR-Test-File", "severity": "test"},
     ]
 
 
@@ -280,6 +347,14 @@ def load_signatures() -> list:
         sigs = load_json(SIGNATURES_BACKUP_PATH, None)
     if not sigs:
         sigs = default_signatures()
+        save_json_with_backup(SIGNATURES_PATH, SIGNATURES_BACKUP_PATH, sigs)
+        return sigs
+
+    # Migración: eliminar firmas falsas de v6.0.0 si existen en disco
+    original_len = len(sigs)
+    sigs = [s for s in sigs
+            if s.get("hash", "").lower() not in _KNOWN_BAD_FAKE_HASHES]
+    if len(sigs) < original_len:
         save_json_with_backup(SIGNATURES_PATH, SIGNATURES_BACKUP_PATH, sigs)
     return sigs
 
@@ -341,6 +416,186 @@ def save_hash_whitelist(hashes: set) -> None:
     save_json(HASH_WHITELIST_PATH, sorted(hashes))
 
 
+def load_url_blocklist() -> list:
+    return load_json(URL_BLOCKLIST_PATH, [])
+
+
+def save_url_blocklist(items: list) -> None:
+    save_json(URL_BLOCKLIST_PATH, items)
+
+
+def load_url_history() -> list:
+    return load_json(URL_HISTORY_PATH, [])
+
+
+def save_url_history(items: list) -> None:
+    save_json(URL_HISTORY_PATH, items)
+
+
+def shannon_entropy(data: str) -> float:
+    if not data:
+        return 0.0
+    counts = Counter(data)
+    length = len(data)
+    entropy = 0.0
+    for c in counts.values():
+        p = c / length
+        entropy -= p * math.log2(p)
+    return round(entropy, 3)
+
+
+# --------------------------------------------------------------------------- #
+# Analizador de URL
+# --------------------------------------------------------------------------- #
+def analyze_url(raw_url: str) -> dict:
+    result = {
+        "url": raw_url.strip(),
+        "score": 0,
+        "is_threat": False,
+        "category": "clean",
+        "hostname": "",
+        "reasons": [],
+    }
+    if not raw_url or not raw_url.strip():
+        result["reasons"].append("URL vacía")
+        result["category"] = "invalid"
+        return result
+
+    url = raw_url.strip()
+    url_lower = url.lower()
+
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", url_lower):
+        url_work = "http://" + url_lower
+    else:
+        url_work = url_lower
+
+    try:
+        parsed = urllib.parse.urlparse(url_work)
+    except ValueError:
+        result["reasons"].append("URL malformada")
+        result["score"] = 60
+        result["is_threat"] = True
+        result["category"] = "malicious"
+        return result
+
+    hostname = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    query = parsed.query or ""
+    netloc = parsed.netloc or ""
+    result["hostname"] = hostname
+
+    reasons: list[str] = []
+    score = 0
+
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", hostname):
+        score += 35
+        reasons.append("Host es una dirección IP cruda")
+
+    if parsed.port and parsed.port not in (80, 443, 8080, 8443):
+        score += 12
+        reasons.append(f"Puerto inusual: {parsed.port}")
+
+    if any(s in hostname for s in URL_SHORTENERS):
+        score += 25
+        reasons.append("Acortador de URL (destino oculto)")
+
+    for tld in URL_SUSPICIOUS_TLDS:
+        if hostname.endswith(tld):
+            score += 18
+            reasons.append(f"TLD frecuentemente abusado: {tld}")
+            break
+
+    if "@" in netloc:
+        score += 35
+        reasons.append("Credenciales embebidas en la URL (@)")
+
+    if hostname.count(".") > 3:
+        score += 15
+        reasons.append(f"Demasiados subdominios ({hostname.count('.')})")
+
+    if "xn--" in hostname:
+        score += 30
+        reasons.append("Posible ataque homograph (punycode xn--)")
+
+    for kw in URL_PHISHING_KEYWORDS:
+        if kw in url_lower:
+            score += 8
+            reasons.append(f"Palabra clave sensible: '{kw}'")
+            break
+
+    for brand in URL_BRAND_NAMES:
+        if brand in url_lower and not hostname.endswith(f"{brand}.com"):
+            score += 20
+            reasons.append(f"Posible suplantación de marca: {brand}")
+            break
+
+    for ext in URL_SUSPICIOUS_DOWNLOAD_EXTS:
+        if path.lower().endswith(ext) or (ext + "?") in url_lower:
+            score += 30
+            reasons.append(f"Descarga de archivo ejecutable: {ext}")
+            break
+
+    if re.search(r"\.(pdf|docx?|jpg|png|txt|xlsx?|zip)\.(exe|scr|bat|cmd|vbs|js|ps1)",
+                 url_lower):
+        score += 30
+        reasons.append("Doble extensión sospechosa en URL")
+
+    if len(url) > 150:
+        score += 10
+        reasons.append(f"URL muy larga ({len(url)} caracteres)")
+
+    if query.count("&") > 5:
+        score += 10
+        reasons.append("Muchos parámetros de consulta")
+
+    if re.search(r"%[0-9a-f]{2}%[0-9a-f]{2}", url_lower):
+        score += 15
+        reasons.append("Codificación hexadecimal repetida")
+
+    if url_lower.startswith("data:"):
+        score += 45
+        reasons.append("Data URI (posible ofuscación)")
+
+    if url_lower.startswith("http://"):
+        score += 5
+        reasons.append("No utiliza HTTPS")
+
+    if any(p in query for p in URL_REDIRECT_PARAMS):
+        score += 15
+        reasons.append("Contiene parámetro de redirección")
+
+    if len(path) > 20:
+        ent = shannon_entropy(path)
+        if ent > 4.0:
+            score += 10
+            reasons.append(f"Alta entropía en la ruta ({ent})")
+
+    if re.search(r"[A-Za-z0-9+/]{40,}={0,2}", url):
+        score += 12
+        reasons.append("Posible cadena Base64 embebida")
+
+    if hostname.count("-") >= 3:
+        score += 10
+        reasons.append("Dominio con muchos guiones")
+
+    score = min(score, 100)
+    result["score"] = score
+    result["reasons"] = reasons or ["Sin indicadores sospechosos"]
+    if score >= 70:
+        result["category"] = "malicious"
+        result["is_threat"] = True
+    elif score >= 40:
+        result["category"] = "suspicious"
+        result["is_threat"] = False
+    else:
+        result["category"] = "clean"
+        result["is_threat"] = False
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Hashes y validación de archivos
+# --------------------------------------------------------------------------- #
 def compute_hashes(filepath: str, max_size_bytes: Optional[int] = None) -> Optional[dict]:
     try:
         if max_size_bytes is not None and os.path.getsize(filepath) > max_size_bytes:
@@ -372,6 +627,12 @@ def match_signature(hashes: dict, signatures: list) -> Optional[dict]:
 
 
 def calculate_entropy(filepath: str, sample_size: int = 65536) -> float:
+    """Entropía de Shannon — INFORMATIVA, no se usa para detección.
+
+    Muchos ejecutables legítimos (instaladores, software empaquetado con UPX,
+    firmas digitales embebidas) tienen entropía > 7.2. Usarla como criterio
+    de amenaza produce falsos positivos masivos.
+    """
     try:
         with open(filepath, "rb") as f:
             data = f.read(sample_size)
@@ -388,19 +649,26 @@ def calculate_entropy(filepath: str, sample_size: int = 65536) -> float:
         return 0.0
 
 
-def detect_script_patterns(filepath: str, sample_size: int = 65536) -> Optional[str]:
+def detect_script_patterns(filepath: str, sample_size: int = 65536) -> list:
+    """Devuelve la LISTA de patrones de script encontrados.
+
+    1 patrón  → sospechoso (scripts de admin usan IEX/DownloadString legítimamente)
+    2+ patrones → amenaza (combinación típica de malware)
+    """
+    matches: list[str] = []
     try:
         with open(filepath, "rb") as f:
             data = f.read(sample_size)
         for pattern, name in SCRIPT_PATTERNS:
             if pattern.search(data):
-                return name
+                matches.append(name)
     except OSError:
         pass
-    return None
+    return matches
 
 
 def is_executable_content(filepath: str) -> Optional[str]:
+    """Solo mira el magic number. No valida estructura completa."""
     try:
         with open(filepath, "rb") as f:
             header = f.read(8)
@@ -412,31 +680,75 @@ def is_executable_content(filepath: str) -> Optional[str]:
     return None
 
 
-def inspect_archive(filepath: str, max_entries: int = 50) -> Optional[list]:
+def is_valid_pe(filepath: str) -> bool:
+    """Valida estructura PE real:
+      - 'MZ' en offset 0
+      - offset PE header en 0x3C
+      - firma 'PE\\0\\0' en ese offset
+    """
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(64)
+            if len(header) < 64 or not header.startswith(b"MZ"):
+                return False
+            pe_offset = struct.unpack("<I", header[60:64])[0]
+            if pe_offset < 0x40 or pe_offset > 0x100000:
+                return False
+            f.seek(pe_offset)
+            sig = f.read(4)
+            return sig == b"PE\x00\x00"
+    except (OSError, struct.error, ValueError):
+        return False
+
+
+def is_valid_elf(filepath: str) -> bool:
+    """Valida estructura ELF real: magic + clase + endianness."""
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(20)
+            if len(header) < 20 or not header.startswith(b"\x7fELF"):
+                return False
+            ei_class = header[4]   # 1=32bit, 2=64bit
+            ei_data = header[5]    # 1=LE, 2=BE
+            if ei_class not in (1, 2) or ei_data not in (1, 2):
+                return False
+            return True
+    except OSError:
+        return False
+
+
+def inspect_archive(filepath: str, max_entries: int = 200) -> Optional[dict]:
+    """Inspección CONSERVADORA:
+
+    Solo marca:
+      - Office (docx/xlsx/pptx) con ejecutables dentro → altamente anómalo
+      - JAR/APK con DLLs de Windows dentro → altamente anómalo
+
+    Los ZIP normales NO se inspeccionan: es normal que un instalador
+    legítimo (Chrome, VLC, 7-Zip, etc.) tenga .exe dentro.
+    """
     if not zipfile.is_zipfile(filepath):
         return None
     try:
         with zipfile.ZipFile(filepath, "r") as z:
             names = z.namelist()[:max_entries]
-        sospechosos = [n for n in names
-                       if n.lower().endswith((".exe", ".dll", ".scr", ".bat", ".vbs"))]
-        return sospechosos or None
     except (zipfile.BadZipFile, OSError):
         return None
 
+    ext = os.path.splitext(filepath)[1].lower()
 
-def load_scan_cache() -> dict:
-    return load_json(SCAN_CACHE_PATH, {})
+    if ext in ARCHIVE_EXTS_OFFICE:
+        bad = [n for n in names if n.lower().endswith(
+            (".exe", ".dll", ".scr", ".bat", ".cmd", ".vbs", ".ps1", ".js", ".hta"))]
+        if bad:
+            return {"type": "office_with_executable", "files": bad[:5]}
 
+    if ext in ARCHIVE_EXTS_JVM:
+        dlls = [n for n in names if n.lower().endswith(".dll")]
+        if dlls:
+            return {"type": "jvm_with_windows_dll", "files": dlls[:5]}
 
-def save_scan_cache(cache: dict) -> None:
-    cutoff = (datetime.now() - timedelta(days=60)).timestamp()
-    cache = {k: v for k, v in cache.items() if v.get("ts", 0) > cutoff}
-    save_json(SCAN_CACHE_PATH, cache)
-
-
-def file_cache_key(path: str, size: int, mtime: float) -> str:
-    return f"{path}|{size}|{int(mtime)}"
+    return None
 
 
 def is_excluded(dirpath: str, exclusions: list, patterns: Optional[list] = None) -> bool:
@@ -456,6 +768,20 @@ def is_excluded(dirpath: str, exclusions: list, patterns: Optional[list] = None)
             if fnmatch.fnmatch(base, pat) or fnmatch.fnmatch(normalized, pat):
                 return True
     return False
+
+
+def load_scan_cache() -> dict:
+    return load_json(SCAN_CACHE_PATH, {})
+
+
+def save_scan_cache(cache: dict) -> None:
+    cutoff = (datetime.now() - timedelta(days=60)).timestamp()
+    cache = {k: v for k, v in cache.items() if v.get("ts", 0) > cutoff}
+    save_json(SCAN_CACHE_PATH, cache)
+
+
+def file_cache_key(path: str, size: int, mtime: float) -> str:
+    return f"{path}|{size}|{int(mtime)}"
 
 
 def quarantine_move(filepath: str, quarantine_dir: Path,
@@ -499,27 +825,50 @@ def open_folder_in_explorer(path: str) -> None:
         if system == "Windows":
             os.startfile(path)  # type: ignore[attr-defined]
         elif system == "Darwin":
-            subprocess.Popen(["open", path])
+            subprocess.Popen(["open", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            subprocess.Popen(["xdg-open", path])
+            subprocess.Popen(["xdg-open", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
 
 
-def send_notification(title: str, message: str) -> None:
+# --------------------------------------------------------------------------- #
+# Notificaciones sin CMD / PowerShell
+# --------------------------------------------------------------------------- #
+def send_notification(title: str, message: str, silent: bool = False) -> None:
+    if silent:
+        return
     try:
+        title = (title or "").replace('"', "'")[:80]
+        message = (message or "").replace('"', "'")[:200]
         system = platform.system()
         if system == "Linux" and shutil.which("notify-send"):
-            subprocess.Popen(["notify-send", title, message])
+            subprocess.Popen(
+                ["notify-send", title, message],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, close_fds=True,
+            )
         elif system == "Darwin" and shutil.which("osascript"):
-            subprocess.Popen(["osascript", "-e",
-                              f'display notification "{message}" with title "{title}"'])
-        elif system == "Windows" and shutil.which("powershell"):
-            script = (f'[reflection.assembly]::loadwithpartialname("System.Windows.Forms")|'
-                      f'Out-Null;$n=New-Object System.Windows.Forms.NotifyIcon;'
-                      f'$n.Icon=[System.Drawing.SystemIcons]::Information;'
-                      f'$n.Visible=$true;$n.ShowBalloonTip(3000,"{title}","{message}",0)')
-            subprocess.Popen(["powershell", "-WindowStyle", "Hidden", "-Command", script])
+            subprocess.Popen(
+                ["osascript", "-e",
+                 f'display notification "{message}" with title "{title}"'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, close_fds=True,
+            )
+        elif system == "Windows":
+            try:
+                from win10toast import ToastNotifier  # type: ignore
+                ToastNotifier().show_toast(title, message, duration=3, threaded=True)
+                return
+            except Exception:
+                pass
+            try:
+                import ctypes
+                ctypes.windll.kernel32.Beep(880, 120)  # type: ignore[attr-defined]
+            except Exception:
+                pass
     except OSError:
         pass
 
@@ -609,6 +958,8 @@ class DavidSecureApp:
         self.hash_whitelist = load_hash_whitelist()
         self.scan_cache = load_scan_cache()
         self.quarantine_dir = QUARANTINE_DIR
+        self.url_blocklist = load_url_blocklist()
+        self.url_history = load_url_history()
 
         if self.config.get("self_integrity", True):
             ok, msg = self_integrity_check()
@@ -632,6 +983,9 @@ class DavidSecureApp:
         self.current_lang = self.config.get("language", "es")
         self._closing = False
 
+        self._log_queue: "queue.Queue[str]" = queue.Queue()
+        self._pump_log_queue()
+
         self.root.title(f"{APP_NAME} - Antivirus Engine  v{APP_VERSION}")
         self.root.geometry(self.config.get("window_geometry", "1100x650"))
         self.root.minsize(900, 550)
@@ -639,9 +993,13 @@ class DavidSecureApp:
 
         self.root.bind("<F5>", lambda e: self.start_scan("Rápido"))
         self.root.bind("<F6>", lambda e: self.start_scan("Completo"))
+        self.root.bind("<F7>", lambda e: self._focus_url_bar())
         self.root.bind("<Control-q>", lambda e: self.on_close())
         self.root.bind("<Control-p>", lambda e: self.toggle_pause())
+        self.root.bind("<Control-u>", lambda e: self._focus_url_bar())
+        self.root.bind("<Control-l>", lambda e: self._clear_log_view())
         self.root.bind("<F1>", lambda e: self.show_shortcuts())
+        self.root.bind("<Escape>", lambda e: self.stop_scan() if self.scan_running else None)
 
         self.plugins = self._load_plugins()
 
@@ -654,6 +1012,36 @@ class DavidSecureApp:
 
         self._schedule_next_scan()
         self._autosave_loop()
+
+    # ------------------------------------------------------------------- #
+    # Cola de logs
+    # ------------------------------------------------------------------- #
+    def _pump_log_queue(self):
+        try:
+            while True:
+                msg = self._log_queue.get_nowait()
+                self._append_log_ui(msg)
+        except queue.Empty:
+            pass
+        if not self._closing:
+            self.root.after(80, self._pump_log_queue)
+
+    def _append_log_ui(self, mensaje: str):
+        if not hasattr(self, "log_text") or not self.log_text.winfo_exists():
+            return
+        self.log_text.config(state="normal")
+        self.log_text.insert("end", mensaje + "\n")
+        if self.config.get("auto_scroll_log", True):
+            self.log_text.see("end")
+        self.log_text.config(state="disabled")
+        if hasattr(self, "status_bar") and self.status_bar.winfo_exists():
+            self.status_bar.config(text=mensaje[:120])
+
+    def _clear_log_view(self):
+        if hasattr(self, "log_text") and self.log_text.winfo_exists():
+            self.log_text.config(state="normal")
+            self.log_text.delete("1.0", "end")
+            self.log_text.config(state="disabled")
 
     # ------------------------------------------------------------------- #
     # Plugins
@@ -752,8 +1140,6 @@ class DavidSecureApp:
         self.show_frame("seguridad")
 
     def _draw_logo(self, canvas: tk.Canvas, canvas_width: int, canvas_height: int):
-        """Dibuja el ícono (D roja + cuadro amarillo) y el texto 'David Secure'.
-        Ya no incluye la 'V' naranja que solía ir encima."""
         import tkinter.font as tkfont
         icon_w, icon_h = 40, 60
         gap_icon_text = 14
@@ -785,8 +1171,6 @@ class DavidSecureApp:
         def m(x, y):
             return (ix + (x - 30), iy + (y - 20))
 
-        # Ícono: solo las dos formas base (rojo + amarillo).
-        # La 'V' naranja fue eliminada para simplificar el logo.
         canvas.create_polygon(*m(30, 20), *m(50, 20), *m(50, 80), *m(30, 60),
                               fill="#FF0000", outline="")
         canvas.create_polygon(*m(50, 20), *m(70, 20), *m(70, 60), *m(50, 80),
@@ -829,6 +1213,7 @@ class DavidSecureApp:
             "Plataforma: Windows, macOS, Linux",
             f"Firmas cargadas: {len(self.signatures)}",
             f"Hashes en whitelist: {len(self.hash_whitelist)}",
+            f"URLs en blocklist: {len(self.url_blocklist)}",
             f"Plugins cargados: {len(self.plugins)}",
             f"psutil disponible: {'Sí' if psutil else 'No'}",
         ]
@@ -846,27 +1231,32 @@ class DavidSecureApp:
     def show_about(self):
         top = tk.Toplevel(self.root)
         top.title(f"Acerca de {APP_NAME}")
-        top.geometry("480x280")
+        top.geometry("520x320")
         top.configure(bg=self.colors["bg_main"])
         texto = (f"{APP_NAME} v{APP_VERSION}\n\n"
                   "Proyecto educativo / de portafolio que simula un motor antivirus.\n\n"
+                  "Detección conservadora: prioriza no molestar al usuario con "
+                  "falsos positivos sobre archivos legítimos (instaladores, "
+                  "software empaquetado, scripts de administración).\n\n"
                   "Este software NO sustituye a una solución antivirus comercial.")
         tk.Label(top, text=texto, bg=self.colors["bg_main"], fg=self.colors["fg_text"],
-                  font=("Arial", 11), justify="left", wraplength=440).pack(padx=15, pady=15)
+                  font=("Arial", 11), justify="left", wraplength=480).pack(padx=15, pady=15)
         tk.Button(top, text="Cerrar", command=top.destroy).pack(pady=10)
 
     def show_shortcuts(self):
         top = tk.Toplevel(self.root)
         top.title("Atajos de teclado")
-        top.geometry("380x220")
+        top.geometry("420x280")
         top.configure(bg=self.colors["bg_main"])
         atajos = [("F5", "Escaneo rápido"), ("F6", "Escaneo completo"),
-                  ("Ctrl+P", "Pausar/Reanudar"), ("Ctrl+Q", "Salir"), ("F1", "Ayuda")]
+                  ("F7 / Ctrl+U", "Foco en barra de URL"),
+                  ("Ctrl+P", "Pausar/Reanudar"), ("Ctrl+L", "Limpiar log"),
+                  ("Esc", "Detener escaneo"), ("Ctrl+Q", "Salir"), ("F1", "Ayuda")]
         for tecla, desc in atajos:
             frame = tk.Frame(top, bg=self.colors["bg_card"], pady=4, padx=8)
             frame.pack(fill="x", padx=10, pady=3)
             tk.Label(frame, text=tecla, bg=self.colors["bg_card"], fg="white",
-                      font=("Consolas", 11, "bold"), width=8, anchor="w").pack(side="left")
+                      font=("Consolas", 11, "bold"), width=12, anchor="w").pack(side="left")
             tk.Label(frame, text=desc, bg=self.colors["bg_card"], fg="white",
                       font=("Arial", 11), anchor="w").pack(side="left")
 
@@ -882,6 +1272,38 @@ class DavidSecureApp:
         tk.Label(title_frame, text="🔍", bg=c["bg_main"], fg=c["fg_title"],
                   font=("Arial", 28)).pack(side="left", padx=10)
 
+        # Barra de URL
+        url_frame = tk.Frame(self.content_frame, bg=c["bg_card"], pady=8, padx=10)
+        url_frame.pack(fill="x", pady=(4, 6))
+        tk.Label(url_frame, text=self.t("url_label"), bg=c["bg_card"], fg=c["fg_text"],
+                  font=("Arial", 12, "bold")).pack(side="left")
+        self.url_var = tk.StringVar()
+        self.url_entry = tk.Entry(url_frame, textvariable=self.url_var,
+                                   font=("Consolas", 11), bg="white", fg="black",
+                                   insertbackground="black")
+        self.url_entry.pack(side="left", fill="x", expand=True, padx=8, ipady=3)
+        self.url_entry.bind("<Return>", lambda e: self.check_url())
+        self.url_entry.bind("<KP_Enter>", lambda e: self.check_url())
+        btn_clear = tk.Button(url_frame, text=self.t("url_clear"),
+                               command=lambda: self._reset_url_bar(),
+                               bg=c["bg_card"], fg="white", bd=0, padx=8, pady=4,
+                               cursor="hand2")
+        btn_clear.pack(side="right", padx=4)
+        btn_check = tk.Button(url_frame, text=self.t("url_btn"),
+                               command=self.check_url,
+                               bg="#337AB7", fg="white", bd=0, padx=10, pady=4,
+                               cursor="hand2")
+        btn_check.pack(side="right")
+        ToolTip(btn_check, "Analiza la URL y, si es peligrosa, la envía a cuarentena/bloqueo")
+        ToolTip(self.url_entry, "Pega o escribe una URL y pulsa Enter (F7)")
+
+        self.url_result_label = tk.Label(self.content_frame, text="",
+                                          bg=c["bg_main"], fg=c["fg_text"],
+                                          font=("Consolas", 10), justify="left",
+                                          wraplength=900, anchor="w")
+        self.url_result_label.pack(fill="x", pady=(0, 6))
+
+        # Botones de escaneo
         btn_row = tk.Frame(self.content_frame, bg=c["bg_main"])
         btn_row.pack(pady=5)
         self.btn_rapido = tk.Button(btn_row, text=self.t("btn_quick"), bg="#5CB85C", fg="white",
@@ -927,6 +1349,8 @@ class DavidSecureApp:
         info_row.pack(fill="x", anchor="w")
         tk.Label(info_row, text=f"Firmas: {len(self.signatures)}", bg=c["bg_main"],
                   fg="#CCFFFF", font=("Arial", 10)).pack(side="left", padx=(0, 20))
+        tk.Label(info_row, text=f"Blocklist URLs: {len(self.url_blocklist)}",
+                  bg=c["bg_main"], fg="#CCFFFF", font=("Arial", 10)).pack(side="left", padx=(0, 20))
         ultimo = self.config.get("last_scan")
         ultimo_txt = "Último escaneo: nunca" if not ultimo else (
             f"Último: {ultimo.get('tipo')} — {ultimo.get('amenazas')} amenazas / "
@@ -969,6 +1393,120 @@ class DavidSecureApp:
             self._set_scan_buttons_state("disabled")
             self.progress.start(15)
 
+    def _focus_url_bar(self):
+        if hasattr(self, "url_entry") and self.url_entry.winfo_exists():
+            self.url_entry.focus_set()
+            self.url_entry.select_range(0, "end")
+
+    def _reset_url_bar(self):
+        if hasattr(self, "url_var"):
+            self.url_var.set("")
+        if hasattr(self, "url_result_label") and self.url_result_label.winfo_exists():
+            self.url_result_label.config(text="", fg=self.colors["fg_text"])
+        self._focus_url_bar()
+
+    # ------------------------------------------------------------------- #
+    # URL
+    # ------------------------------------------------------------------- #
+    def check_url(self):
+        if not self.config.get("url_check_enabled", True):
+            messagebox.showinfo(APP_NAME, "El análisis de URL está deshabilitado en Configuración.")
+            return
+        raw = (self.url_var.get() or "").strip()
+        if not raw:
+            return
+        threading.Thread(target=self._check_url_worker, args=(raw,), daemon=True).start()
+
+    def _check_url_worker(self, raw: str):
+        result = analyze_url(raw)
+        hostname = result.get("hostname", "")
+        already_blocked = (raw in self.url_blocklist) or (hostname and hostname in self.url_blocklist)
+        if already_blocked:
+            result["is_threat"] = True
+            result["category"] = "blocked"
+            result["score"] = max(result["score"], 80)
+            if "URL en lista de bloqueo" not in result["reasons"]:
+                result["reasons"].insert(0, "URL ya en lista de bloqueo")
+
+        self._push_url_history(result)
+
+        if result["is_threat"] and self.config.get("url_auto_quarantine", True):
+            self._quarantine_url(result)
+
+        self.root.after(0, lambda r=result: self._render_url_result(r))
+
+    def _render_url_result(self, result: dict):
+        c = self.colors
+        cat = result["category"]
+        if cat in ("malicious", "blocked"):
+            color = c["url_bad"]
+            icon = "⛔"
+            action = "ENVIADA A CUARENTENA"
+        elif cat == "suspicious":
+            color = c["url_warn"]
+            icon = "⚠️"
+            action = "SOSPECHOSA"
+        elif cat == "invalid":
+            color = c["url_warn"]
+            icon = "❓"
+            action = "URL INVÁLIDA"
+        else:
+            color = c["url_ok"]
+            icon = "✅"
+            action = "SEGURA"
+
+        reasons_txt = "\n".join(f"   • {r}" for r in result["reasons"])
+        text = (f"{icon} {action}   (score: {result['score']}/100)\n"
+                f"   Host: {result.get('hostname','')}\n"
+                f"   Motivos:\n{reasons_txt}")
+        if hasattr(self, "url_result_label") and self.url_result_label.winfo_exists():
+            self.url_result_label.config(text=text, fg=color)
+        self.log(f"URL: {result['url']} → {result['category']} "
+                  f"(score={result['score']})")
+
+    def _quarantine_url(self, result: dict):
+        url = result["url"]
+        with self.state_lock:
+            if url not in self.url_blocklist:
+                self.url_blocklist.append(url)
+                save_url_blocklist(self.url_blocklist)
+            record = {
+                "id": uuid.uuid4().hex,
+                "filename": url,
+                "original_path": url,
+                "quarantine_path": None,
+                "threat_name": f"URL.{result['category'].upper()}",
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "sha256": hashlib.sha256(url.encode()).hexdigest(),
+                "type": "url",
+                "score": result["score"],
+                "reasons": result["reasons"][:8],
+            }
+            self.amenazas_bloqueadas.append(record)
+            save_quarantine_records(self.amenazas_bloqueadas)
+
+        self.log(f"URL en cuarentena: {url}")
+        if self.config.get("notify_on_threat", True):
+            send_notification(APP_NAME, f"URL bloqueada: {result.get('hostname', '')}",
+                              silent=self.config.get("silent_notifications", False))
+
+    def _push_url_history(self, result: dict):
+        entry = {
+            "ts": time.time(),
+            "url": result["url"],
+            "hostname": result.get("hostname", ""),
+            "score": result["score"],
+            "category": result["category"],
+        }
+        self.url_history.append(entry)
+        limit = max(50, int(self.config.get("url_history_limit", 500)))
+        if len(self.url_history) > limit:
+            self.url_history = self.url_history[-limit:]
+        save_url_history(self.url_history)
+
+    # ------------------------------------------------------------------- #
+    # Escaneo
+    # ------------------------------------------------------------------- #
     def start_custom_scan(self):
         carpeta = filedialog.askdirectory(title="Selecciona la carpeta a escanear")
         if carpeta:
@@ -1007,11 +1545,12 @@ class DavidSecureApp:
         try:
             with open(ruta, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["tipo", "fecha", "escaneados", "amenazas",
+                w.writerow(["tipo", "fecha", "escaneados", "amenazas", "sospechosos",
                             "duracion_seg", "cancelado"])
                 for h in self.config.get("scan_history", []):
                     w.writerow([h.get("tipo"), h.get("fecha"), h.get("escaneados"),
-                                h.get("amenazas"), h.get("duracion_seg"), h.get("cancelado")])
+                                h.get("amenazas"), h.get("sospechosos", 0),
+                                h.get("duracion_seg"), h.get("cancelado")])
             messagebox.showinfo(APP_NAME, f"CSV exportado:\n{ruta}")
         except OSError as e:
             messagebox.showerror(APP_NAME, f"Error al exportar CSV: {e}")
@@ -1028,6 +1567,7 @@ class DavidSecureApp:
                 f"<tr><td>{html_lib.escape(str(h.get('tipo','')))}</td>"
                 f"<td>{html_lib.escape(str(h.get('fecha','')))}</td>"
                 f"<td>{h.get('escaneados',0)}</td><td>{h.get('amenazas',0)}</td>"
+                f"<td>{h.get('sospechosos',0)}</td>"
                 f"<td>{h.get('duracion_seg',0)}</td></tr>" for h in hist)
             doc = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Reporte {APP_NAME}</title>
@@ -1037,7 +1577,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
 <h1>Reporte {APP_NAME} v{APP_VERSION}</h1>
 <p>Generado: {datetime.now().isoformat(timespec='seconds')}</p>
 <h2>Historial de escaneos</h2>
-<table><tr><th>Tipo</th><th>Fecha</th><th>Escaneados</th><th>Amenazas</th><th>Duración (s)</th></tr>
+<table><tr><th>Tipo</th><th>Fecha</th><th>Escaneados</th><th>Amenazas</th><th>Sospechosos</th><th>Duración (s)</th></tr>
 {rows}</table></body></html>"""
             Path(ruta).write_text(doc, encoding="utf-8")
             messagebox.showinfo(APP_NAME, f"HTML exportado:\n{ruta}")
@@ -1045,7 +1585,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
             messagebox.showerror(APP_NAME, f"Error al exportar HTML: {e}")
 
     # ------------------------------------------------------------------- #
-    # Cuentas
+    # Cuentas / Dispositivo
     # ------------------------------------------------------------------- #
     def build_cuentas(self):
         c = self.colors
@@ -1064,9 +1604,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
             tk.Label(frame, text=estado, bg=c["bg_card"], fg=color,
                       font=("Arial", 14, "bold")).pack(side="right")
 
-    # ------------------------------------------------------------------- #
-    # Dispositivo
-    # ------------------------------------------------------------------- #
     def build_dispositivo(self):
         c = self.colors
         tk.Label(self.content_frame, text="Seguridad del Dispositivo", bg=c["bg_main"],
@@ -1095,6 +1632,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
         tam_cuarentena = sum(f.stat().st_size for f in self.quarantine_dir.glob("*") if f.is_file())
         info.append(("Tamaño cuarentena", human_readable_size(tam_cuarentena)))
         info.append(("Archivos en cuarentena", str(len(self.amenazas_bloqueadas))))
+        info.append(("URLs bloqueadas", str(len(self.url_blocklist))))
 
         for item, valor in info:
             frame = tk.Frame(self.content_frame, bg=c["bg_card"], pady=8, padx=10)
@@ -1128,6 +1666,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
         tk.Button(top_row, text="Vaciar cuarentena", command=self.vaciar_cuarentena,
                   bg=c["accent_warn"], fg="white", bd=0, padx=10, pady=4,
                   cursor="hand2").pack(side="right")
+        tk.Button(top_row, text="Exportar CSV", command=self.export_quarantine_csv,
+                  bg=c["bg_card"], fg="white", bd=0, padx=10, pady=4,
+                  cursor="hand2").pack(side="right", padx=4)
 
         filtro = self.filter_var.get().lower().strip()
         registros = [r for r in self.amenazas_bloqueadas
@@ -1150,29 +1691,33 @@ th{{background:#3131A1;color:white}}</style></head><body>
         scrollbar.pack(side="right", fill="y")
 
         for registro in registros:
-            frame = tk.Frame(scroll_frame, bg=c["accent_warn"], pady=6, padx=10)
+            is_url = registro.get("type") == "url"
+            bg_color = "#8E44AD" if is_url else c["accent_warn"]
+            frame = tk.Frame(scroll_frame, bg=bg_color, pady=6, padx=10)
             frame.pack(fill="x", pady=3)
-            texto = (f"⚠️  {registro.get('filename')} — {registro.get('threat_name')} "
+            icon = "🌐" if is_url else "⚠️"
+            texto = (f"{icon}  {registro.get('filename')} — {registro.get('threat_name')} "
                       f"({registro.get('date','')})")
-            tk.Label(frame, text=texto, bg=c["accent_warn"], fg="white",
+            tk.Label(frame, text=texto, bg=bg_color, fg="white",
                       font=("Arial", 11), anchor="w").pack(side="left", fill="x", expand=True)
-            tk.Button(frame, text="Restaurar",
-                      command=lambda r=registro: self.restore_from_quarantine(r),
-                      bg="white", fg="black", bd=0, padx=6,
-                      cursor="hand2").pack(side="right", padx=3)
-            tk.Button(frame, text="Restaurar como…", command=lambda r=registro: self.restore_as(r),
-                      bg="#80D4FF", fg="black", bd=0, padx=6,
-                      cursor="hand2").pack(side="right", padx=3)
-            tk.Button(frame, text="Ver", command=lambda r=registro: self.preview_quarantine(r),
-                      bg="#FFFFE0", fg="black", bd=0, padx=6,
-                      cursor="hand2").pack(side="right", padx=3)
+            if not is_url:
+                tk.Button(frame, text="Restaurar",
+                          command=lambda r=registro: self.restore_from_quarantine(r),
+                          bg="white", fg="black", bd=0, padx=6,
+                          cursor="hand2").pack(side="right", padx=3)
+                tk.Button(frame, text="Restaurar como…", command=lambda r=registro: self.restore_as(r),
+                          bg="#80D4FF", fg="black", bd=0, padx=6,
+                          cursor="hand2").pack(side="right", padx=3)
+                tk.Button(frame, text="Ver", command=lambda r=registro: self.preview_quarantine(r),
+                          bg="#FFFFE0", fg="black", bd=0, padx=6,
+                          cursor="hand2").pack(side="right", padx=3)
             tk.Button(frame, text="Eliminar", command=lambda r=registro: self.delete_permanently(r),
                       bg="black", fg="white", bd=0, padx=6,
                       cursor="hand2").pack(side="right", padx=3)
 
     def _build_quarantine_context_menu(self, widget):
         menu = tk.Menu(widget, tearoff=0)
-        menu.add_command(label="Restaurar todos", command=self.restore_all)
+        menu.add_command(label="Restaurar todos (archivos)", command=self.restore_all)
         menu.add_command(label="Eliminar todos", command=self.vaciar_cuarentena)
         menu.add_separator()
         menu.add_command(label="Exportar selección", command=self.export_quarantine_csv)
@@ -1185,6 +1730,8 @@ th{{background:#3131A1;color:white}}</style></head><body>
             return
         errores = 0
         for r in list(self.amenazas_bloqueadas):
+            if r.get("type") == "url":
+                continue
             origen = r.get("quarantine_path")
             destino = r.get("original_path")
             if not origen or not os.path.exists(origen):
@@ -1194,8 +1741,10 @@ th{{background:#3131A1;color:white}}</style></head><body>
                 shutil.move(origen, destino)
             except OSError:
                 errores += 1
-        self.amenazas_bloqueadas = [r for r in self.amenazas_bloqueadas
-                                     if os.path.exists(r.get("quarantine_path", ""))]
+        self.amenazas_bloqueadas = [
+            r for r in self.amenazas_bloqueadas
+            if r.get("type") == "url" or os.path.exists(r.get("quarantine_path", ""))
+        ]
         save_quarantine_records(self.amenazas_bloqueadas)
         self.show_frame("problemas")
         if errores:
@@ -1210,9 +1759,11 @@ th{{background:#3131A1;color:white}}</style></head><body>
         try:
             with open(ruta, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["filename", "threat_name", "date", "original_path", "sha256"])
+                w.writerow(["type", "filename", "threat_name", "date",
+                            "original_path", "sha256"])
                 for r in self.amenazas_bloqueadas:
-                    w.writerow([r.get("filename"), r.get("threat_name"), r.get("date"),
+                    w.writerow([r.get("type", "file"), r.get("filename"),
+                                r.get("threat_name"), r.get("date"),
                                 r.get("original_path"), r.get("sha256", "")])
             messagebox.showinfo(APP_NAME, f"Exportado:\n{ruta}")
         except OSError as e:
@@ -1236,6 +1787,21 @@ th{{background:#3131A1;color:white}}</style></head><body>
             messagebox.showerror(APP_NAME, f"Error: {e}")
 
     def preview_quarantine(self, registro: dict):
+        if registro.get("type") == "url":
+            top = tk.Toplevel(self.root)
+            top.title("Detalle de URL bloqueada")
+            top.geometry("560x300")
+            top.configure(bg=self.colors["bg_main"])
+            info = (f"URL: {registro.get('filename')}\n"
+                    f"Score: {registro.get('score')}\n"
+                    f"Fecha: {registro.get('date')}\n\n"
+                    "Motivos:\n" +
+                    "\n".join(f"  • {r}" for r in registro.get("reasons", [])))
+            txt = tk.Text(top, bg="black", fg="#B8F397", font=("Consolas", 10))
+            txt.pack(fill="both", expand=True, padx=10, pady=10)
+            txt.insert("1.0", info)
+            txt.config(state="disabled")
+            return
         origen = registro.get("quarantine_path")
         if not origen or not os.path.exists(origen):
             messagebox.showerror(APP_NAME, "Archivo no encontrado.")
@@ -1263,6 +1829,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
         txt.config(state="disabled")
 
     def restore_from_quarantine(self, registro: dict):
+        if registro.get("type") == "url":
+            messagebox.showinfo(APP_NAME, "Esta entrada es una URL; usa Eliminar para quitarla.")
+            return
         if not self._verify_password_if_needed():
             return
         origen = registro.get("quarantine_path")
@@ -1288,7 +1857,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
         stored = self.config.get("password_hash")
         if not stored:
             return True
-        from tkinter import simpledialog
         pwd = simpledialog.askstring("Contraseña", "Introduce la contraseña:", show="*")
         if not pwd:
             return False
@@ -1304,19 +1872,28 @@ th{{background:#3131A1;color:white}}</style></head><body>
         if not messagebox.askyesno(APP_NAME,
                                     f"¿Eliminar permanentemente '{registro.get('filename')}'?"):
             return
-        origen = registro.get("quarantine_path")
-        try:
-            if origen and os.path.exists(origen):
-                try:
-                    size = os.path.getsize(origen)
-                    with open(origen, "wb") as f:
-                        f.write(os.urandom(min(size, 65536)))
-                except OSError:
-                    pass
-                os.remove(origen)
-        except OSError as e:
-            messagebox.showerror(APP_NAME, f"No se pudo eliminar: {e}")
-            return
+        if registro.get("type") == "url":
+            url = registro.get("filename")
+            try:
+                if url in self.url_blocklist:
+                    self.url_blocklist.remove(url)
+                    save_url_blocklist(self.url_blocklist)
+            except ValueError:
+                pass
+        else:
+            origen = registro.get("quarantine_path")
+            try:
+                if origen and os.path.exists(origen):
+                    try:
+                        size = os.path.getsize(origen)
+                        with open(origen, "wb") as f:
+                            f.write(os.urandom(min(size, 65536)))
+                    except OSError:
+                        pass
+                    os.remove(origen)
+            except OSError as e:
+                messagebox.showerror(APP_NAME, f"No se pudo eliminar: {e}")
+                return
         self.amenazas_bloqueadas = [r for r in self.amenazas_bloqueadas if r is not registro]
         save_quarantine_records(self.amenazas_bloqueadas)
         self.log(f"Eliminado: {registro.get('filename')}")
@@ -1327,9 +1904,11 @@ th{{background:#3131A1;color:white}}</style></head><body>
             return
         if not self._verify_password_if_needed():
             return
-        if not messagebox.askyesno(APP_NAME, "¿Eliminar TODOS los archivos en cuarentena?"):
+        if not messagebox.askyesno(APP_NAME, "¿Eliminar TODOS los archivos/URLs en cuarentena?"):
             return
         for registro in list(self.amenazas_bloqueadas):
+            if registro.get("type") == "url":
+                continue
             origen = registro.get("quarantine_path")
             try:
                 if origen and os.path.exists(origen):
@@ -1337,7 +1916,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
             except OSError:
                 pass
         self.amenazas_bloqueadas = []
+        self.url_blocklist = []
         save_quarantine_records(self.amenazas_bloqueadas)
+        save_url_blocklist(self.url_blocklist)
         self.log("Cuarentena vaciada.")
         self.show_frame("problemas")
 
@@ -1356,22 +1937,24 @@ th{{background:#3131A1;color:white}}</style></head><body>
 
         total_archivos = sum(h.get("escaneados", 0) for h in hist)
         total_amenazas = sum(h.get("amenazas", 0) for h in hist)
+        total_susp = sum(h.get("sospechosos", 0) for h in hist)
         total_tiempo = sum(h.get("duracion_seg", 0) for h in hist)
         stats = (f"Escaneos totales: {len(hist)}   |   "
                   f"Archivos analizados: {total_archivos}   |   "
                   f"Amenazas: {total_amenazas}   |   "
+                  f"Sospechosos: {total_susp}   |   "
                   f"Tiempo total: {total_tiempo:.1f}s")
         tk.Label(self.content_frame, text=stats, bg=c["bg_card"], fg=c["fg_text"],
                   font=("Arial", 11, "bold")).pack(anchor="w", fill="x", pady=(0, 10), ipady=6)
 
         frame = tk.Frame(self.content_frame, bg=c["bg_main"])
         frame.pack(fill="both", expand=True)
-        cols = ("Tipo", "Fecha", "Escaneados", "Amenazas", "Duración (s)")
+        cols = ("Tipo", "Fecha", "Escaneados", "Amenazas", "Sospechosos", "Duración (s)")
         tree = ttk.Treeview(frame, columns=cols, show="headings", height=15)
         for col in cols:
             tree.heading(col, text=col,
                           command=lambda cc=col: self._sort_tree(tree, cc, False))
-            tree.column(col, width=140, anchor="w")
+            tree.column(col, width=120, anchor="w")
         tree.pack(side="left", fill="both", expand=True)
         sb = tk.Scrollbar(frame, orient="vertical", command=tree.yview)
         sb.pack(side="right", fill="y")
@@ -1379,6 +1962,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
         for h in reversed(hist):
             tree.insert("", "end", values=(h.get("tipo", ""), h.get("fecha", ""),
                                             h.get("escaneados", 0), h.get("amenazas", 0),
+                                            h.get("sospechosos", 0),
                                             h.get("duracion_seg", 0)))
         self._hist_tree = tree
 
@@ -1440,16 +2024,14 @@ th{{background:#3131A1;color:white}}</style></head><body>
                    textvariable=self.throttle_var, width=6,
                    command=self.save_throttle).pack(side="right")
 
-        # Inspeccionar ZIP
         self.deep_archives_var = tk.BooleanVar(value=self.config.get("deep_archives", True))
         tk.Checkbutton(self.content_frame,
-                        text="Inspeccionar contenido de archivos ZIP/Office",
+                        text="Inspeccionar contenido de Office (docx/xlsx/pptx) y JAR/APK",
                         variable=self.deep_archives_var, bg=c["bg_main"], fg=c["fg_text"],
                         font=("Arial", 12), activebackground=c["bg_main"],
                         selectcolor="black",
                         command=self.toggle_deep_archives).pack(anchor="w", pady=4)
 
-        # Battery aware
         self.battery_aware_var = tk.BooleanVar(value=self.config.get("battery_aware", True))
         tk.Checkbutton(self.content_frame,
                         text="Pausar escaneo con batería baja (<20%)",
@@ -1458,7 +2040,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         selectcolor="black",
                         command=self.toggle_battery_aware).pack(anchor="w", pady=4)
 
-        # Shutdown after
         self.shutdown_after_var = tk.BooleanVar(value=self.config.get("shutdown_after_scan", False))
         tk.Checkbutton(self.content_frame,
                         text="Apagar el equipo al finalizar escaneo",
@@ -1466,6 +2047,40 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         font=("Arial", 12), activebackground=c["bg_main"],
                         selectcolor="black",
                         command=self.toggle_shutdown_after).pack(anchor="w", pady=4)
+
+        self.autoscroll_var = tk.BooleanVar(value=self.config.get("auto_scroll_log", True))
+        tk.Checkbutton(self.content_frame,
+                        text="Auto-scroll del log",
+                        variable=self.autoscroll_var, bg=c["bg_main"], fg=c["fg_text"],
+                        font=("Arial", 12), activebackground=c["bg_main"],
+                        selectcolor="black",
+                        command=self.toggle_autoscroll).pack(anchor="w", pady=4)
+
+        self.silent_notify_var = tk.BooleanVar(
+            value=self.config.get("silent_notifications", False))
+        tk.Checkbutton(self.content_frame,
+                        text="Notificaciones silenciosas (no mostrar popups)",
+                        variable=self.silent_notify_var, bg=c["bg_main"], fg=c["fg_text"],
+                        font=("Arial", 12), activebackground=c["bg_main"],
+                        selectcolor="black",
+                        command=self.toggle_silent_notify).pack(anchor="w", pady=4)
+
+        self.url_check_var = tk.BooleanVar(value=self.config.get("url_check_enabled", True))
+        tk.Checkbutton(self.content_frame,
+                        text="Habilitar análisis de URLs",
+                        variable=self.url_check_var, bg=c["bg_main"], fg=c["fg_text"],
+                        font=("Arial", 12), activebackground=c["bg_main"],
+                        selectcolor="black",
+                        command=self.toggle_url_check).pack(anchor="w", pady=4)
+
+        self.url_quarantine_var = tk.BooleanVar(
+            value=self.config.get("url_auto_quarantine", True))
+        tk.Checkbutton(self.content_frame,
+                        text="Enviar automáticamente a cuarentena URLs peligrosas",
+                        variable=self.url_quarantine_var, bg=c["bg_main"], fg=c["fg_text"],
+                        font=("Arial", 12), activebackground=c["bg_main"],
+                        selectcolor="black",
+                        command=self.toggle_url_quarantine).pack(anchor="w", pady=4)
 
         # Exclusiones
         excl_frame = tk.Frame(self.content_frame, bg=c["bg_card"], pady=8, padx=10)
@@ -1519,6 +2134,10 @@ th{{background:#3131A1;color:white}}</style></head><body>
         tk.Button(acciones_frame, text="Vaciar logs", command=self.clear_logs,
                   bg=c["bg_card"], fg="white", bd=0, padx=10, pady=6,
                   cursor="hand2").pack(side="left", padx=4)
+        tk.Button(acciones_frame, text="Exportar URL history",
+                  command=self.export_url_history,
+                  bg=c["bg_card"], fg="white", bd=0, padx=10, pady=6,
+                  cursor="hand2").pack(side="left", padx=4)
         tk.Button(acciones_frame, text="Restablecer config", command=self.reset_config,
                   bg=c["accent_warn"], fg="white", bd=0, padx=10, pady=6,
                   cursor="hand2").pack(side="left", padx=4)
@@ -1526,9 +2145,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
                   bg="#337AB7", fg="white", bd=0, padx=10, pady=6,
                   cursor="hand2").pack(side="left", padx=4)
 
-    # ------------------------------------------------------------------- #
-    # Métodos auxiliares de Configuración
-    # ------------------------------------------------------------------- #
     def toggle_theme(self):
         self.config["theme"] = "dark" if self.config.get("theme") == "light" else "light"
         save_config(self.config)
@@ -1573,6 +2189,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
     def clear_logs(self):
         if messagebox.askyesno(APP_NAME, "¿Vaciar el historial de logs en pantalla?"):
             self.log_buffer.clear()
+            self._clear_log_view()
             self.show_frame("seguridad")
 
     def reset_config(self):
@@ -1614,8 +2231,23 @@ th{{background:#3131A1;color:white}}</style></head><body>
         self.config["notify_on_threat"] = self.notify_var.get()
         save_config(self.config)
 
+    def toggle_autoscroll(self):
+        self.config["auto_scroll_log"] = self.autoscroll_var.get()
+        save_config(self.config)
+
+    def toggle_silent_notify(self):
+        self.config["silent_notifications"] = self.silent_notify_var.get()
+        save_config(self.config)
+
+    def toggle_url_check(self):
+        self.config["url_check_enabled"] = self.url_check_var.get()
+        save_config(self.config)
+
+    def toggle_url_quarantine(self):
+        self.config["url_auto_quarantine"] = self.url_quarantine_var.get()
+        save_config(self.config)
+
     def set_password(self):
-        from tkinter import simpledialog
         pwd = simpledialog.askstring("Contraseña",
                                        "Nueva contraseña (vacío = eliminar):", show="*")
         if pwd is None:
@@ -1629,7 +2261,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
         save_config(self.config)
 
     def update_signatures_url(self):
-        from tkinter import simpledialog
         url = simpledialog.askstring("Actualizar firmas", "URL del JSON de firmas:")
         if not url:
             return
@@ -1653,7 +2284,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
         messagebox.showinfo(APP_NAME, "Configuración restaurada.")
 
     def save_current_profile(self):
-        from tkinter import simpledialog
         nombre = simpledialog.askstring("Guardar perfil", "Nombre del perfil:")
         if not nombre:
             return
@@ -1667,8 +2297,29 @@ th{{background:#3131A1;color:white}}</style></head><body>
         save_json(SCAN_PROFILES_PATH, perfiles)
         messagebox.showinfo(APP_NAME, f"Perfil '{nombre}' guardado.")
 
+    def export_url_history(self):
+        if not self.url_history:
+            messagebox.showinfo(APP_NAME, "No hay historial de URLs.")
+            return
+        ruta = filedialog.asksaveasfilename(defaultextension=".csv",
+                                             filetypes=[("CSV", "*.csv")],
+                                             initialfile="david_secure_url_history.csv")
+        if not ruta:
+            return
+        try:
+            with open(ruta, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["fecha", "url", "hostname", "score", "categoria"])
+                for h in self.url_history:
+                    fecha = datetime.fromtimestamp(h.get("ts", 0)).strftime("%Y-%m-%d %H:%M")
+                    w.writerow([fecha, h.get("url"), h.get("hostname"),
+                                h.get("score"), h.get("category")])
+            messagebox.showinfo(APP_NAME, f"Exportado:\n{ruta}")
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Error: {e}")
+
     # ------------------------------------------------------------------- #
-    # Monitoreo de procesos
+    # Monitoreo
     # ------------------------------------------------------------------- #
     def _refresh_status_indicator(self):
         color = self.colors["accent_ok"] if self.monitoring else self.colors["accent_warn"]
@@ -1693,19 +2344,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
         if len(self.log_buffer) > 5000:
             self.log_buffer = self.log_buffer[-2500:]
         try:
-            self.root.after(0, self._update_log, mensaje)
-        except RuntimeError:
+            self._log_queue.put_nowait(mensaje)
+        except Exception:
             pass
-
-    def _update_log(self, mensaje: str):
-        if not hasattr(self, "log_text") or not self.log_text.winfo_exists():
-            return
-        self.log_text.config(state="normal")
-        self.log_text.insert("end", mensaje + "\n")
-        self.log_text.see("end")
-        self.log_text.config(state="disabled")
-        if hasattr(self, "status_bar") and self.status_bar.winfo_exists():
-            self.status_bar.config(text=mensaje[:120])
 
     def _set_scan_buttons_state(self, state: str):
         for btn in (getattr(self, "btn_rapido", None),
@@ -1719,11 +2360,15 @@ th{{background:#3131A1;color:white}}</style></head><body>
             self.btn_pause.config(state="normal" if state == "disabled" else "disabled")
 
     def stop_scan(self):
+        if not self.scan_running:
+            return
         self.scan_cancel_event.set()
         self.scan_pause_event.set()
         self.log("Cancelación solicitada...")
 
     def toggle_pause(self):
+        if not self.scan_running:
+            return
         if self.scan_pause_event.is_set():
             self.scan_pause_event.clear()
             self.log("Escaneo pausado.")
@@ -1749,10 +2394,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
             except Exception:
                 pass
 
-        if hasattr(self, "log_text") and self.log_text.winfo_exists():
-            self.log_text.config(state="normal")
-            self.log_text.delete(1.0, "end")
-            self.log_text.config(state="disabled")
+        self._clear_log_view()
         self.log_buffer.clear()
 
         self.scan_cancel_event.clear()
@@ -1782,9 +2424,26 @@ th{{background:#3131A1;color:white}}</style></head><body>
         if hasattr(self, "btn_pause") and self.btn_pause.winfo_exists():
             self.btn_pause.config(text="⏸ Pausar")
 
+    # ------------------------------------------------------------------- #
+    # DETECCIÓN CONSERVADORA — núcleo del cambio v6.2.0
+    # ------------------------------------------------------------------- #
     def _scan_file(self, filepath: str, max_size_bytes: int) -> dict:
-        result = {"path": filepath, "threat": None, "hashes": None,
-                  "size": 0, "errors": 0, "skipped": False, "cached": False}
+        """Escanea un archivo. Devuelve:
+
+            {
+                "path": str,
+                "threat": None | dict,       # certeza → cuarentena
+                "suspicious": None | dict,   # reporte, NO cuarentena
+                "hashes": dict | None,
+                "size": int,
+                "errors": int,
+                "skipped": bool,
+                "cached": bool
+            }
+        """
+        result = {"path": filepath, "threat": None, "suspicious": None,
+                  "hashes": None, "size": 0, "errors": 0,
+                  "skipped": False, "cached": False}
         try:
             size = os.path.getsize(filepath)
             result["size"] = size
@@ -1792,6 +2451,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
             result["errors"] += 1
             return result
 
+        # Cache incremental
         if self.config.get("incremental", True):
             try:
                 mtime = os.path.getmtime(filepath)
@@ -1811,53 +2471,88 @@ th{{background:#3131A1;color:white}}</style></head><body>
             return result
         result["hashes"] = hashes
 
+        # 1) Whitelist — confianza absoluta
         if hashes["sha256"].lower() in self.hash_whitelist:
             result["cached"] = True
             return result
 
+        # 2) Firma de hash — amenaza DEFINITIVA
         match = match_signature(hashes, self.signatures)
         if match:
             result["threat"] = match
             return result
 
         nombre = os.path.basename(filepath).lower()
-
-        if nombre.endswith(DOUBLE_EXT_SOSPECHOSAS):
-            result["threat"] = {"name": "Doble Extensión",
-                                 "severity": "medium", "source": "heuristic"}
-            return result
-
-        script_hit = detect_script_patterns(filepath)
-        if script_hit:
-            result["threat"] = {"name": script_hit, "severity": "high",
-                                 "source": "heuristic"}
-            return result
-
         ext = os.path.splitext(nombre)[1]
-        if ext and ext not in EXEC_EXTS:
+
+        # 3) Doble extensión — SOLO amenaza si el contenido es PE/ELF válido
+        es_doble_ext = any(nombre.endswith(d) for d in DOUBLE_EXT_SOSPECHOSAS)
+        if es_doble_ext:
             header = is_executable_content(filepath)
-            if header in ("PE/EXE", "ELF") and size > 4096:
-                result["threat"] = {"name": f"Ejecutable camuflado ({header})",
-                                     "severity": "high", "source": "heuristic"}
+            pe_ok = header == "PE/EXE" and is_valid_pe(filepath)
+            elf_ok = header == "ELF" and is_valid_elf(filepath)
+            if pe_ok or elf_ok:
+                result["threat"] = {
+                    "name": f"Doble extensión con {header} válido",
+                    "severity": "high", "source": "heuristic",
+                }
+                return result
+            if result["suspicious"] is None:
+                result["suspicious"] = {
+                    "name": "Nombre con doble extensión",
+                    "severity": "low", "source": "heuristic",
+                    "reason": "El contenido NO es ejecutable (probablemente inofensivo)",
+                }
+
+        # 4) Script patterns — 2+ = amenaza, 1 = sospechoso
+        script_hits = detect_script_patterns(filepath)
+        if len(script_hits) >= 2:
+            result["threat"] = {
+                "name": "Script malicioso: " + ", ".join(script_hits[:3]),
+                "severity": "high", "source": "heuristic",
+            }
+            return result
+        elif len(script_hits) == 1:
+            if result["suspicious"] is None:
+                result["suspicious"] = {
+                    "name": "Patrón de script aislado: " + script_hits[0],
+                    "severity": "low", "source": "heuristic",
+                    "reason": "Un único patrón puede ser legítimo (admin)",
+                }
+
+        # 5) Ejecutable camuflado — requiere PE/ELF válido
+        if ext and ext not in EXEC_EXTS and not es_doble_ext:
+            header = is_executable_content(filepath)
+            if header == "PE/EXE" and size > 4096 and is_valid_pe(filepath):
+                result["threat"] = {
+                    "name": f"Ejecutable camuflado (PE válido, extensión {ext})",
+                    "severity": "high", "source": "heuristic",
+                }
+                return result
+            if header == "ELF" and size > 4096 and is_valid_elf(filepath):
+                result["threat"] = {
+                    "name": f"Ejecutable camuflado (ELF válido, extensión {ext})",
+                    "severity": "high", "source": "heuristic",
+                }
                 return result
 
-        if size > 8192:
-            ent = calculate_entropy(filepath)
-            if ent > self.config.get("entropy_threshold", 7.2) and ext in EXEC_EXTS:
-                result["threat"] = {"name": f"Posible packer/cifrado (entropía {ent})",
-                                     "severity": "low", "source": "heuristic"}
-                return result
-
-        if self.config.get("deep_archives", True) and ext in ARCHIVE_EXTS:
+        # 6) Inspección conservadora de Office y JAR/APK
+        if self.config.get("deep_archives", True) and ext in (ARCHIVE_EXTS_OFFICE | ARCHIVE_EXTS_JVM):
             try:
                 inside = inspect_archive(filepath)
                 if inside:
-                    result["threat"] = {"name": f"Ejecutable dentro de archivo: {inside[0]}",
-                                         "severity": "medium", "source": "heuristic"}
+                    result["threat"] = {
+                        "name": f"Contenido anómalo en {ext}: {inside['files'][0]}",
+                        "severity": "high", "source": "heuristic",
+                    }
                     return result
             except Exception:
                 pass
 
+        # 7) (ELIMINADO) Comprobación de entropía — producía falsos positivos
+        #    masivos en instaladores y software empaquetado legítimo.
+
+        # 8) Plugins
         for name, fn in self.plugins:
             try:
                 hit = fn(filepath)
@@ -1868,6 +2563,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
             except Exception:
                 pass
 
+        # Cache como limpio (threat o no, sin importar suspicious)
         if self.config.get("incremental", True) and not result["threat"]:
             try:
                 mtime = os.path.getmtime(filepath)
@@ -1903,6 +2599,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
 
         archivos_escaneados = 0
         amenazas_encontradas = 0
+        sospechosos_encontrados = 0
         omitidos_grandes = 0
         errores = 0
         cacheados = 0
@@ -1922,6 +2619,8 @@ th{{background:#3131A1;color:white}}</style></head><body>
                            if not is_excluded(os.path.join(root_dir, d), exclusions, patterns)]
                 for file in files:
                     archivos_pendientes.append(os.path.join(root_dir, file))
+
+            self.scan_files_total_estimate = len(archivos_pendientes)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = {executor.submit(self._scan_file, fp, max_size_bytes): fp
@@ -1951,17 +2650,28 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         if registro:
                             amenazas_encontradas += 1
                             if self.config.get("notify_on_threat", True):
-                                send_notification(APP_NAME,
-                                                   f"Amenaza: {threat['name']}")
+                                send_notification(
+                                    APP_NAME, f"Amenaza: {threat['name']}",
+                                    silent=self.config.get("silent_notifications", False))
+                    elif res.get("suspicious"):
+                        # Reporte informativo, NO se toca el archivo
+                        susp = res["suspicious"]
+                        sospechosos_encontrados += 1
+                        self.log(f"Sospechoso (sin cuarentena): {susp['name']} "
+                                  f"→ {res['path']} ({susp.get('reason', '')})")
                     if throttle > 0:
                         time.sleep(throttle)
-                    if archivos_escaneados % 100 == 0 and time.time() - last_update > 0.4:
+                    if archivos_escaneados % 50 == 0 and time.time() - last_update > 0.4:
                         elapsed = time.time() - self.scan_start_time
                         speed = archivos_escaneados / elapsed if elapsed > 0 else 0
+                        total = max(self.scan_files_total_estimate, archivos_escaneados)
+                        pct = (archivos_escaneados / total * 100) if total else 0
+                        eta = ((total - archivos_escaneados) / speed) if speed > 0 else 0
                         self.root.after(0, self._update_progress_label,
-                                         f"{archivos_escaneados} archivos | "
-                                         f"{speed:.1f} arch/s | "
-                                         f"{amenazas_encontradas} amenazas")
+                                         f"{archivos_escaneados}/{total} ({pct:.1f}%) | "
+                                         f"{speed:.1f} arch/s | ETA {eta:.0f}s | "
+                                         f"{amenazas_encontradas} amenazas | "
+                                         f"{sospechosos_encontrados} sospechosos")
                         last_update = time.time()
                 if cancelado:
                     break
@@ -1978,6 +2688,8 @@ th{{background:#3131A1;color:white}}</style></head><body>
             self.log(f"Análisis {tipo} finalizado.")
         self.log(f"Archivos escaneados: {archivos_escaneados}")
         self.log(f"Amenazas neutralizadas: {amenazas_encontradas}")
+        if sospechosos_encontrados:
+            self.log(f"Sospechosos (solo reporte): {sospechosos_encontrados}")
         if omitidos_grandes:
             self.log(f"Omitidos por tamaño: {omitidos_grandes}")
         if cacheados:
@@ -1986,11 +2698,14 @@ th{{background:#3131A1;color:white}}</style></head><body>
             self.log(f"Errores: {errores}")
         self.log(f"Duración: {duracion} s")
 
-        if amenazas_encontradas == 0 and not cancelado:
+        if amenazas_encontradas == 0 and sospechosos_encontrados == 0 and not cancelado:
             self.log("El sistema está limpio.")
+        elif amenazas_encontradas == 0 and sospechosos_encontrados > 0:
+            self.log("No se encontró malware. Solo elementos sospechosos (no cuarentenados).")
 
         resumen = {"tipo": tipo, "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
                    "escaneados": archivos_escaneados, "amenazas": amenazas_encontradas,
+                   "sospechosos": sospechosos_encontrados,
                    "duracion_seg": duracion, "cancelado": cancelado,
                    "cacheados": cacheados, "errores": errores}
         self.config["last_scan"] = resumen
@@ -2001,7 +2716,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
 
         if not cancelado:
             self.root.after(0, lambda: messagebox.showinfo(
-                APP_NAME, f"Análisis {tipo} completado.\nAmenazas: {amenazas_encontradas}"))
+                APP_NAME, f"Análisis {tipo} completado.\n"
+                          f"Amenazas: {amenazas_encontradas}\n"
+                          f"Sospechosos (no cuarentenados): {sospechosos_encontrados}"))
             if self.config.get("shutdown_after_scan", False):
                 self.root.after(2000, self._shutdown_system)
 
@@ -2039,6 +2756,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "sha256": hashes.get("sha256", ""),
             "salt": salt.hex(),
+            "type": "file",
         }
         with self.state_lock:
             self.amenazas_bloqueadas.append(registro)
@@ -2046,7 +2764,6 @@ th{{background:#3131A1;color:white}}</style></head><body>
         return registro
 
     def background_monitor(self):
-        """Monitoreo pasivo de procesos y conexiones (solo avisa, no actúa)."""
         procesos_sospechosos = (set(PROCESOS_SOSPECHOSOS_DEFAULT)
                                  - set(self.config.get("process_whitelist", [])))
         ultimo_aviso = 0.0
@@ -2061,7 +2778,9 @@ th{{background:#3131A1;color:white}}</style></head><body>
                         if proc_name in procesos_sospechosos and time.time() - ultimo_aviso > 10:
                             self.log(f"Aviso: proceso en lista de vigilancia → {proc_name}")
                             if self.config.get("notify_on_threat", True):
-                                send_notification(APP_NAME, f"Aviso: {proc_name}")
+                                send_notification(APP_NAME, f"Aviso: {proc_name}",
+                                                  silent=self.config.get(
+                                                      "silent_notifications", False))
                             ultimo_aviso = time.time()
 
                         cmdline = " ".join(info.get("cmdline") or []).lower()
@@ -2142,7 +2861,7 @@ th{{background:#3131A1;color:white}}</style></head><body>
 
 
 # --------------------------------------------------------------------------- #
-# Modo CLI
+# Modo CLI dentro del archivo GUI (misma detección conservadora)
 # --------------------------------------------------------------------------- #
 def run_cli_scan(tipo: str, custom_path: Optional[str], logger: logging.Logger,
                   output_json: bool = False, verbose: bool = False) -> int:
@@ -2165,9 +2884,10 @@ def run_cli_scan(tipo: str, custom_path: Optional[str], logger: logging.Logger,
 
     if not output_json:
         print(f"{APP_NAME} v{APP_VERSION} — escaneo CLI ({tipo})")
-    archivos, amenazas, errores = 0, 0, 0
+    archivos, amenazas, sospechosos, errores = 0, 0, 0, 0
     inicio = time.time()
     findings = []
+    suspicious_list = []
 
     for ruta in rutas:
         if not os.path.exists(ruta):
@@ -2184,30 +2904,77 @@ def run_cli_scan(tipo: str, custom_path: Optional[str], logger: logging.Logger,
                         continue
                     if hashes["sha256"].lower() in hash_whitelist:
                         continue
+
+                    nombre_threat = None
+                    nombre_susp = None
+
                     match = match_signature(hashes, signatures)
-                    nombre = match["name"] if match else None
-                    if not nombre and file.lower().endswith(DOUBLE_EXT_SOSPECHOSAS):
-                        nombre = "Doble Extensión"
-                    if not nombre:
-                        hit = detect_script_patterns(filepath)
-                        if hit:
-                            nombre = hit
-                    if nombre:
+                    if match:
+                        nombre_threat = match["name"]
+
+                    if not nombre_threat:
+                        nombre_lower = file.lower()
+                        ext = os.path.splitext(nombre_lower)[1]
+
+                        # Doble extensión
+                        if any(nombre_lower.endswith(d) for d in DOUBLE_EXT_SOSPECHOSAS):
+                            header = is_executable_content(filepath)
+                            pe_ok = header == "PE/EXE" and is_valid_pe(filepath)
+                            elf_ok = header == "ELF" and is_valid_elf(filepath)
+                            if pe_ok or elf_ok:
+                                nombre_threat = f"Doble extensión con {header} válido"
+                            else:
+                                nombre_susp = "Nombre con doble extensión"
+
+                        # Scripts
+                        if not nombre_threat:
+                            hits = detect_script_patterns(filepath)
+                            if len(hits) >= 2:
+                                nombre_threat = "Script malicioso: " + ", ".join(hits[:3])
+                            elif len(hits) == 1 and not nombre_susp:
+                                nombre_susp = "Patrón de script aislado: " + hits[0]
+
+                        # Camuflado
+                        if not nombre_threat and ext and ext not in EXEC_EXTS:
+                            header = is_executable_content(filepath)
+                            try:
+                                sz = os.path.getsize(filepath)
+                            except OSError:
+                                sz = 0
+                            if header == "PE/EXE" and sz > 4096 and is_valid_pe(filepath):
+                                nombre_threat = f"Ejecutable camuflado (PE válido, ext {ext})"
+                            elif header == "ELF" and sz > 4096 and is_valid_elf(filepath):
+                                nombre_threat = f"Ejecutable camuflado (ELF válido, ext {ext})"
+
+                        # Office/JVM
+                        if not nombre_threat and config.get("deep_archives", True):
+                            if ext in (ARCHIVE_EXTS_OFFICE | ARCHIVE_EXTS_JVM):
+                                inside = inspect_archive(filepath)
+                                if inside:
+                                    nombre_threat = f"Contenido anómalo en {ext}: {inside['files'][0]}"
+
+                    if nombre_threat:
                         dest = quarantine_move(filepath, QUARANTINE_DIR)
                         if dest:
                             dest_path = dest[0] if isinstance(dest, tuple) else dest
                             quarantine_records.append({
                                 "id": uuid.uuid4().hex, "filename": file,
                                 "original_path": filepath, "quarantine_path": dest_path,
-                                "threat_name": nombre,
+                                "threat_name": nombre_threat, "type": "file",
                                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                 "sha256": hashes.get("sha256", ""),
                             })
                             amenazas += 1
-                            findings.append({"file": file, "threat": nombre, "path": filepath})
+                            findings.append({"file": file, "threat": nombre_threat, "path": filepath})
                             if verbose:
-                                print(f"  [!] {file} -> {nombre} (cuarentena)")
-                            logger.info(f"CLI: {file} -> {nombre}")
+                                print(f"  [!] {file} -> {nombre_threat} (cuarentena)")
+                            logger.info(f"CLI: {file} -> {nombre_threat}")
+                    elif nombre_susp:
+                        sospechosos += 1
+                        suspicious_list.append({"file": file, "reason": nombre_susp, "path": filepath})
+                        if verbose:
+                            print(f"  [i] {file} -> {nombre_susp} (solo reporte)")
+                        logger.info(f"CLI sospechoso: {file} -> {nombre_susp}")
                 except Exception as e:
                     errores += 1
                     if verbose:
@@ -2218,8 +2985,8 @@ def run_cli_scan(tipo: str, custom_path: Optional[str], logger: logging.Logger,
     save_quarantine_records(quarantine_records)
     duracion = round(time.time() - inicio, 1)
     resumen = {"tipo": tipo, "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "escaneados": archivos, "amenazas": amenazas, "duracion_seg": duracion,
-                "errores": errores, "cancelado": False}
+                "escaneados": archivos, "amenazas": amenazas, "sospechosos": sospechosos,
+                "duracion_seg": duracion, "errores": errores, "cancelado": False}
     config["last_scan"] = resumen
     hist = config.setdefault("scan_history", [])
     hist.append(resumen)
@@ -2227,12 +2994,49 @@ def run_cli_scan(tipo: str, custom_path: Optional[str], logger: logging.Logger,
     save_config(config)
 
     if output_json:
-        print(json.dumps({"summary": resumen, "findings": findings},
+        print(json.dumps({"summary": resumen, "findings": findings,
+                          "suspicious": suspicious_list},
                           indent=2, ensure_ascii=False))
     else:
         print(f"Listo. Archivos: {archivos} | Amenazas: {amenazas} | "
-              f"Errores: {errores} | {duracion}s")
+              f"Sospechosos: {sospechosos} | Errores: {errores} | {duracion}s")
     return 0
+
+
+def run_cli_url(url: str, output_json: bool = False) -> int:
+    ensure_app_dirs()
+    cfg = load_config()
+    blocklist = load_url_blocklist()
+    result = analyze_url(url)
+    hostname = result.get("hostname", "")
+    if url in blocklist or (hostname and hostname in blocklist):
+        result["is_threat"] = True
+        result["category"] = "blocked"
+        result["score"] = max(result["score"], 80)
+        result["reasons"].insert(0, "URL ya en lista de bloqueo")
+    if result["is_threat"] and cfg.get("url_auto_quarantine", True):
+        if url not in blocklist:
+            blocklist.append(url)
+            save_url_blocklist(blocklist)
+        records = load_quarantine_records()
+        records.append({
+            "id": uuid.uuid4().hex, "filename": url, "original_path": url,
+            "quarantine_path": None, "threat_name": f"URL.{result['category'].upper()}",
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "sha256": hashlib.sha256(url.encode()).hexdigest(),
+            "type": "url", "score": result["score"],
+            "reasons": result["reasons"][:8],
+        })
+        save_quarantine_records(records)
+    if output_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"URL: {result['url']}")
+        print(f"Categoría: {result['category']} | Score: {result['score']}/100")
+        print("Motivos:")
+        for r in result["reasons"]:
+            print(f"  - {r}")
+    return 0 if not result["is_threat"] else 2
 
 
 def main():
@@ -2240,6 +3044,7 @@ def main():
     parser.add_argument("--scan", choices=["rapido", "completo"],
                          help="Escaneo sin GUI")
     parser.add_argument("--path", help="Ruta personalizada")
+    parser.add_argument("--url", help="Analizar una URL sin GUI")
     parser.add_argument("--json", action="store_true", help="Salida en JSON")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose")
     parser.add_argument("--version", action="version", version=APP_VERSION)
@@ -2257,6 +3062,9 @@ def main():
         pass
 
     logger = setup_logger()
+
+    if args.url:
+        sys.exit(run_cli_url(args.url, output_json=args.json))
 
     if args.scan:
         sys.exit(run_cli_scan(args.scan, args.path, logger,
