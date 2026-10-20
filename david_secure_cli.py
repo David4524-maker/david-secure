@@ -2,13 +2,16 @@
 """
 David Secure CLI — Interfaz de línea de comandos
 =================================================
-Versión CLI del motor antivirus David Secure v6.1.0.
+Versión CLI del motor antivirus David Secure v6.2.0.
 
-Novedades:
-  • Banner ASCII gigante "DAVID SECURE" en color.
-  • El CMD NO se cierra al hacer doble clic (mini-shell final).
-  • Cierra escribiendo: salir | exit | quit | q
-  • Mini-shell acepta cualquier comando del CLI (scan, url, status, etc.)
+Cambios v6.2.0 (anti-falsos-positivos):
+  • Detección conservadora: NO marca archivos legítimos.
+  • Scripts requieren 2+ patrones para ser amenaza (1 solo → "sospechoso").
+  • Archivos empaquetados (alta entropía) YA NO son amenaza.
+  • ZIP normales con EXE dentro YA NO son amenaza (instaladores legítimos).
+  • Validación PE/ELF real (no solo cabecera MZ).
+  • Firmas falsas (MD5 de "hello") eliminadas.
+  • Campo "suspicious" separado de "threat" (reporta sin cuarentena).
 
 Uso:
   david_secure_cli.py <comando> [opciones]
@@ -29,6 +32,7 @@ import re
 import shlex
 import shutil
 import signal
+import struct
 import sys
 import tempfile
 import time
@@ -47,7 +51,7 @@ from typing import Any, Optional
 # Constantes
 # --------------------------------------------------------------------------- #
 APP_NAME = "David Secure"
-APP_VERSION = "6.1.0"
+APP_VERSION = "6.2.0"
 
 APP_DIR = Path.home() / ".david_secure"
 CONFIG_PATH = APP_DIR / "config.json"
@@ -79,6 +83,8 @@ DEFAULT_EXCLUDED_DIRS = {
     "$RECYCLE.BIN", "System Volume Information", ".Trash",
 }
 
+# Patrones de script — se requiere 2+ para marcar como amenaza (evita falsos positivos
+# en scripts de administración legítimos que usan IEX o DownloadString).
 SCRIPT_PATTERNS = [
     (re.compile(rb"Invoke-Expression\s*\(", re.I), "PowerShell.InvokeExpression"),
     (re.compile(rb"IEX\s*\(", re.I), "PowerShell.IEX"),
@@ -88,15 +94,21 @@ SCRIPT_PATTERNS = [
     (re.compile(rb"CreateObject\s*\(\s*[\"']WScript", re.I), "Script.WScriptCreateObject"),
     (re.compile(rb"eval\s*\(\s*base64_decode", re.I), "PHP.EvalBase64"),
     (re.compile(rb"document\.write\s*\(\s*unescape", re.I), "JS.UnescapeWrite"),
+    (re.compile(rb"mshta\s+http", re.I), "Script.MshtaRemote"),
+    (re.compile(rb"powershell(.exe)?\s+(-\w+\s+)*-e(nc(odedcommand)?)?\s", re.I),
+     "Script.PowerShellEncoded"),
 ]
 
+# Cabeceras de archivo (solo para clasificar; la detección requiere validación real)
 HEADER_PATTERNS = [
     (b"MZ", "PE/EXE"),
     (b"\x7fELF", "ELF"),
     (b"PK\x03\x04", "ZIP"),
 ]
 
-ARCHIVE_EXTS = {".zip", ".jar", ".apk", ".docx", ".xlsx", ".pptx"}
+# Solo inspeccionamos contenido de estos formatos (los ZIP normales NO se inspeccionan)
+ARCHIVE_EXTS_OFFICE = {".docx", ".xlsx", ".pptx"}
+ARCHIVE_EXTS_JVM = {".jar", ".apk"}
 
 URL_PHISHING_KEYWORDS = (
     "login", "signin", "sign-in", "verify", "verification", "account",
@@ -333,18 +345,17 @@ def save_config(config: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Firmas
+# Firmas — SOLO hashes reales. EICAR es el único archivo de prueba estándar.
 # --------------------------------------------------------------------------- #
 def default_signatures() -> list:
     return [
+        # EICAR estándar (archivo de prueba legítimo de la industria antivirus)
         {"hash": "44d88612fea8a8f36de82e1278abb02f", "algo": "md5",
-         "name": "EICAR Test File", "severity": "test"},
+         "name": "EICAR-Test-File", "severity": "test"},
+        {"hash": "3395856ce81f2b7382dee72602f798b642f14140", "algo": "sha1",
+         "name": "EICAR-Test-File", "severity": "test"},
         {"hash": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0",
-         "algo": "sha256", "name": "EICAR Test File", "severity": "test"},
-        {"hash": "5d41402abc4b2a76b9719d911017c592", "algo": "md5",
-         "name": "Malware.Simulado.1", "severity": "medium"},
-        {"hash": "7d793037a0760186574b0282f2f435e7", "algo": "md5",
-         "name": "Trojan.Generic.Test", "severity": "high"},
+         "algo": "sha256", "name": "EICAR-Test-File", "severity": "test"},
     ]
 
 
@@ -435,7 +446,7 @@ def save_hash_whitelist(hashes: set) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Core engine
+# Core engine — hashes y validación de cabeceras
 # --------------------------------------------------------------------------- #
 def compute_hashes(filepath: str, max_size_bytes: Optional[int] = None) -> Optional[dict]:
     try:
@@ -468,6 +479,11 @@ def match_signature(hashes: dict, signatures: list) -> Optional[dict]:
 
 
 def calculate_entropy(filepath: str, sample_size: int = 65536) -> float:
+    """Entropía de Shannon — INFORMATIVA, no se usa para detección.
+
+    Muchos ejecutables/instaladores legítimos usan compresión (UPX, etc.)
+    y tienen entropía > 7.2. Por eso ya NO se usa como criterio de amenaza.
+    """
     try:
         with open(filepath, "rb") as f:
             data = f.read(sample_size)
@@ -484,19 +500,26 @@ def calculate_entropy(filepath: str, sample_size: int = 65536) -> float:
         return 0.0
 
 
-def detect_script_patterns(filepath: str, sample_size: int = 65536) -> Optional[str]:
+def detect_script_patterns(filepath: str, sample_size: int = 65536) -> list:
+    """Devuelve la LISTA de patrones de script encontrados.
+
+    1 patrón → sospechoso (los scripts de admin legítimos usan IEX/DownloadString)
+    2+ patrones → amenaza (combinación típica de malware)
+    """
+    matches = []
     try:
         with open(filepath, "rb") as f:
             data = f.read(sample_size)
         for pattern, name in SCRIPT_PATTERNS:
             if pattern.search(data):
-                return name
+                matches.append(name)
     except OSError:
         pass
-    return None
+    return matches
 
 
 def is_executable_content(filepath: str) -> Optional[str]:
+    """Solo verifica el magic number. No valida estructura."""
     try:
         with open(filepath, "rb") as f:
             header = f.read(8)
@@ -508,17 +531,79 @@ def is_executable_content(filepath: str) -> Optional[str]:
     return None
 
 
-def inspect_archive(filepath: str, max_entries: int = 50) -> Optional[list]:
+def is_valid_pe(filepath: str) -> bool:
+    """Valida estructura PE real (no solo cabecera MZ).
+
+    Un ejecutable PE válido tiene:
+      - 'MZ' en offset 0
+      - offset de PE header (4 bytes LE) en offset 0x3C
+      - firma 'PE\\0\\0' en ese offset
+    """
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(64)
+            if len(header) < 64 or not header.startswith(b"MZ"):
+                return False
+            pe_offset = struct.unpack("<I", header[60:64])[0]
+            # Sanity: el PE header debe estar en un rango razonable
+            if pe_offset < 0x40 or pe_offset > 0x100000:
+                return False
+            f.seek(pe_offset)
+            sig = f.read(4)
+            return sig == b"PE\x00\x00"
+    except (OSError, struct.error, ValueError):
+        return False
+
+
+def is_valid_elf(filepath: str) -> bool:
+    """Valida estructura ELF real (magic + clase + endianness)."""
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(20)
+            if len(header) < 20 or not header.startswith(b"\x7fELF"):
+                return False
+            ei_class = header[4]   # 1=32bit, 2=64bit
+            ei_data = header[5]    # 1=LE, 2=BE
+            if ei_class not in (1, 2) or ei_data not in (1, 2):
+                return False
+            return True
+    except OSError:
+        return False
+
+
+def inspect_archive(filepath: str, max_entries: int = 200) -> Optional[dict]:
+    """Inspección CONSERVADORA de archivos comprimidos.
+
+    Solo marca:
+      - Office (docx/xlsx/pptx) que contengan ejecutables → altamente anómalo
+      - JAR/APK que contengan DLLs de Windows → altamente anómalo
+
+    Los .zip normales NO se inspeccionan: es normal que un instalador
+    legítimo (Chrome, VLC, etc.) tenga .exe dentro.
+    """
     if not zipfile.is_zipfile(filepath):
         return None
     try:
         with zipfile.ZipFile(filepath, "r") as z:
             names = z.namelist()[:max_entries]
-        sospechosos = [n for n in names
-                       if n.lower().endswith((".exe", ".dll", ".scr", ".bat", ".vbs"))]
-        return sospechosos or None
     except (zipfile.BadZipFile, OSError):
         return None
+
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if ext in ARCHIVE_EXTS_OFFICE:
+        bad = [n for n in names if n.lower().endswith(
+            (".exe", ".dll", ".scr", ".bat", ".cmd", ".vbs", ".ps1", ".js", ".hta"))]
+        if bad:
+            return {"type": "office_with_executable", "files": bad[:5]}
+
+    if ext in ARCHIVE_EXTS_JVM:
+        # Un JAR/APK legítimo contiene .class/.dex/.so — NO .dll de Windows
+        dlls = [n for n in names if n.lower().endswith(".dll")]
+        if dlls:
+            return {"type": "jvm_with_windows_dll", "files": dlls[:5]}
+
+    return None
 
 
 def is_excluded(dirpath: str, exclusions: list, patterns: Optional[list] = None) -> bool:
@@ -709,7 +794,7 @@ def analyze_url(raw_url: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Cuarentena
+# Cuarentena (cifrado XOR/PBKDF2)
 # --------------------------------------------------------------------------- #
 def quarantine_move(filepath: str, quarantine_dir: Path,
                     password: Optional[str] = None) -> Optional[tuple]:
@@ -810,7 +895,7 @@ def progress_line(done: int, total: int, threats: int, speed: float, width: int 
 
 
 # --------------------------------------------------------------------------- #
-# Comando: scan
+# Comando: scan — DETECCIÓN CONSERVADORA
 # --------------------------------------------------------------------------- #
 _SCAN_CANCEL = False
 
@@ -827,8 +912,20 @@ def _handle_signal(signum, frame):
 
 def _scan_single(filepath: str, max_size_bytes: int, signatures: list,
                  hash_whitelist: set, config: dict) -> dict:
-    result = {"path": filepath, "threat": None, "hashes": None,
-              "size": 0, "errors": 0, "skipped": False}
+    """Escanea un archivo. Devuelve:
+
+        {
+            "path": str,
+            "threat": None | dict,       # certeza → cuarentena
+            "suspicious": None | dict,   # reporte solamente, NO cuarentena
+            "hashes": dict | None,
+            "size": int,
+            "errors": int,
+            "skipped": bool
+        }
+    """
+    result = {"path": filepath, "threat": None, "suspicious": None,
+              "hashes": None, "size": 0, "errors": 0, "skipped": False}
     try:
         size = os.path.getsize(filepath)
         result["size"] = size
@@ -845,52 +942,88 @@ def _scan_single(filepath: str, max_size_bytes: int, signatures: list,
         return result
     result["hashes"] = hashes
 
+    # 1) Whitelist — confianza absoluta
     if hashes["sha256"].lower() in hash_whitelist:
         return result
 
+    # 2) Firma de hash — amenaza DEFINITIVA (EICAR, muestras conocidas)
     match = match_signature(hashes, signatures)
     if match:
         result["threat"] = match
         return result
 
     nombre = os.path.basename(filepath).lower()
-
-    if nombre.endswith(DOUBLE_EXT_SOSPECHOSAS):
-        result["threat"] = {"name": "Doble Extensión",
-                            "severity": "medium", "source": "heuristic"}
-        return result
-
-    script_hit = detect_script_patterns(filepath)
-    if script_hit:
-        result["threat"] = {"name": script_hit, "severity": "high",
-                            "source": "heuristic"}
-        return result
-
     ext = os.path.splitext(nombre)[1]
-    if ext and ext not in EXEC_EXTS:
+
+    # 3) Doble extensión — SOLO amenaza si el contenido es un PE/ELF VÁLIDO
+    es_doble_ext = any(nombre.endswith(d) for d in DOUBLE_EXT_SOSPECHOSAS)
+    if es_doble_ext:
         header = is_executable_content(filepath)
-        if header in ("PE/EXE", "ELF") and size > 4096:
-            result["threat"] = {"name": "Ejecutable camuflado ({})".format(header),
-                                "severity": "high", "source": "heuristic"}
+        pe_ok = header == "PE/EXE" and is_valid_pe(filepath)
+        elf_ok = header == "ELF" and is_valid_elf(filepath)
+        if pe_ok or elf_ok:
+            result["threat"] = {
+                "name": "Doble extensión con {} válido".format(header),
+                "severity": "high", "source": "heuristic",
+            }
+            return result
+        # Solo nombre raro, contenido no ejecutable → solo reporte
+        if result["suspicious"] is None:
+            result["suspicious"] = {
+                "name": "Nombre con doble extensión",
+                "severity": "low", "source": "heuristic",
+                "reason": "El contenido NO es ejecutable (probablemente inofensivo)",
+            }
+
+    # 4) Patrones de script — 2+ = amenaza, 1 = sospechoso
+    script_hits = detect_script_patterns(filepath)
+    if len(script_hits) >= 2:
+        result["threat"] = {
+            "name": "Script malicioso: " + ", ".join(script_hits[:3]),
+            "severity": "high", "source": "heuristic",
+        }
+        return result
+    elif len(script_hits) == 1:
+        if result["suspicious"] is None:
+            result["suspicious"] = {
+                "name": "Patrón de script aislado: " + script_hits[0],
+                "severity": "low", "source": "heuristic",
+                "reason": "Un único patrón puede ser legítimo (admin)",
+            }
+
+    # 5) Ejecutable camuflado en extensión NO ejecutable — requiere PE/ELF válido
+    if ext and ext not in EXEC_EXTS and not es_doble_ext:
+        header = is_executable_content(filepath)
+        if header == "PE/EXE" and size > 4096 and is_valid_pe(filepath):
+            result["threat"] = {
+                "name": "Ejecutable camuflado (PE válido, extensión {})".format(ext),
+                "severity": "high", "source": "heuristic",
+            }
+            return result
+        if header == "ELF" and size > 4096 and is_valid_elf(filepath):
+            result["threat"] = {
+                "name": "Ejecutable camuflado (ELF válido, extensión {})".format(ext),
+                "severity": "high", "source": "heuristic",
+            }
             return result
 
-    if size > 8192:
-        ent = calculate_entropy(filepath)
-        if ent > config.get("entropy_threshold", 7.2) and ext in EXEC_EXTS:
-            result["threat"] = {"name": "Posible packer/cifrado (entropía {})".format(ent),
-                                "severity": "low", "source": "heuristic"}
-            return result
+    # 6) Inspección conservadora de archivos comprimidos
+    if config.get("deep_archives", True):
+        if ext in ARCHIVE_EXTS_OFFICE or ext in ARCHIVE_EXTS_JVM:
+            try:
+                inside = inspect_archive(filepath)
+                if inside:
+                    result["threat"] = {
+                        "name": "Contenido anómalo en {}: {}".format(
+                            ext, inside["files"][0]),
+                        "severity": "high", "source": "heuristic",
+                    }
+                    return result
+            except Exception:
+                pass
 
-    if config.get("deep_archives", True) and ext in ARCHIVE_EXTS:
-        try:
-            inside = inspect_archive(filepath)
-            if inside:
-                result["threat"] = {
-                    "name": "Ejecutable dentro de archivo: {}".format(inside[0]),
-                    "severity": "medium", "source": "heuristic"}
-                return result
-        except Exception:
-            pass
+    # 7) (Eliminado) Comprobación de entropía — producía muchísimos
+    #    falsos positivos en instaladores y software empaquetado legítimo.
 
     return result
 
@@ -962,8 +1095,9 @@ def cmd_scan(args) -> int:
     throttle = config.get("scan_throttle_ms", 0) / 1000.0
     no_quarantine = getattr(args, "no_quarantine", False)
 
-    scans, threats, errors, skipped = 0, 0, 0, 0
+    scans, threats, errors, skipped, susp_count = 0, 0, 0, 0, 0
     findings = []
+    suspicious_files = []
     inicio = time.time()
     last_render = 0.0
     quarantine_records = load_quarantine_records()
@@ -1024,6 +1158,21 @@ def cmd_scan(args) -> int:
                     qtxt = " → cuarentena" if finding["quarantined"] else ""
                     print("  {} {} → {} [{}]{}".format(
                         icon, bname, tname, threat["severity"], qtxt))
+            elif res.get("suspicious"):
+                susp_count += 1
+                susp = res["suspicious"]
+                suspicious_files.append({
+                    "path": res["path"],
+                    "reason": susp.get("name", ""),
+                    "detail": susp.get("reason", ""),
+                    "severity": susp.get("severity", "low"),
+                })
+                if not args.json and not args.quiet:
+                    sys.stdout.write("\r" + " " * 100 + "\r")
+                    bname = c(os.path.basename(res["path"]), C.BOLD)
+                    print("  {} {} → {} (solo reporte, NO cuarentena)".format(
+                        c("ℹ", C.BLUE, bold=True), bname,
+                        c(susp.get("name", "sospechoso"), C.YELLOW)))
 
             if throttle > 0:
                 time.sleep(throttle)
@@ -1045,6 +1194,7 @@ def cmd_scan(args) -> int:
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "escaneados": scans,
         "amenazas": threats,
+        "sospechosos": susp_count,
         "duracion_seg": duracion,
         "errores": errors,
         "omitidos_tamano": skipped,
@@ -1057,13 +1207,16 @@ def cmd_scan(args) -> int:
     save_config(config)
 
     if args.json:
-        print(json.dumps({"summary": resumen, "findings": findings},
+        print(json.dumps({"summary": resumen, "findings": findings,
+                          "suspicious": suspicious_files},
                          indent=2, ensure_ascii=False))
     elif not args.quiet:
         print_header("Resumen")
         print_kv("Archivos escaneados:", str(scans))
         threats_color = C.RED if threats else C.GREEN
         print_kv("Amenazas neutralizadas:", str(threats), threats_color)
+        if susp_count:
+            print_kv("Sospechosos (no cuarentena):", str(susp_count), C.YELLOW)
         if skipped:
             print_kv("Omitidos por tamaño:", str(skipped), C.DIM)
         if errors:
@@ -1071,9 +1224,14 @@ def cmd_scan(args) -> int:
         print_kv("Duración:", "{}s".format(duracion))
         estado = "CANCELADO" if _SCAN_CANCEL else "COMPLETADO"
         print_kv("Estado:", estado, C.YELLOW if _SCAN_CANCEL else C.GREEN)
-        if threats == 0 and not _SCAN_CANCEL:
+        if threats == 0 and susp_count == 0 and not _SCAN_CANCEL:
             print()
             print("  " + c("✓ El sistema está limpio.", C.GREEN, bold=True))
+        elif threats == 0 and susp_count > 0:
+            print()
+            print("  " + c("✓ No se encontró malware. Solo hay elementos "
+                          "sospechosos (revisados, no cuarentenados).",
+                          C.GREEN, bold=True))
         print()
 
     if _SCAN_CANCEL:
@@ -1603,6 +1761,8 @@ def cmd_status(args) -> int:
         print_kv("Último escaneo:", "{} — {}".format(ls.get("tipo"), ls.get("fecha")))
         amen_color = C.RED if ls.get("amenazas") else C.GREEN
         print_kv("  amenazas:", str(ls.get("amenazas", 0)), amen_color)
+        if ls.get("sospechosos"):
+            print_kv("  sospechosos:", str(ls.get("sospechosos", 0)), C.YELLOW)
         print_kv("  archivos:", str(ls.get("escaneados", 0)))
     else:
         print_kv("Último escaneo:", "(ninguno)", C.DIM)
@@ -1647,10 +1807,11 @@ def cmd_history(args) -> int:
             with open(dest, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["tipo", "fecha", "escaneados", "amenazas",
-                            "duracion_seg", "errores", "cancelado"])
+                            "sospechosos", "duracion_seg", "errores", "cancelado"])
                 for h in hist:
                     w.writerow([h.get("tipo", ""), h.get("fecha", ""),
                                 h.get("escaneados", 0), h.get("amenazas", 0),
+                                h.get("sospechosos", 0),
                                 h.get("duracion_seg", 0), h.get("errores", 0),
                                 h.get("cancelado", False)])
             print_ok("Exportado: " + dest)
@@ -1669,23 +1830,28 @@ def cmd_history(args) -> int:
     print_header("Historial ({} entradas, mostrando {})".format(len(hist), len(items)))
     total_files = sum(h.get("escaneados", 0) for h in hist)
     total_threats = sum(h.get("amenazas", 0) for h in hist)
+    total_susp = sum(h.get("sospechosos", 0) for h in hist)
     total_time = sum(h.get("duracion_seg", 0) for h in hist)
     print_kv("Total archivos:", str(total_files))
     print_kv("Total amenazas:", str(total_threats),
              C.RED if total_threats else C.GREEN)
+    if total_susp:
+        print_kv("Total sospechosos:", str(total_susp), C.YELLOW)
     print_kv("Tiempo acumulado:", "{:.1f}s".format(total_time))
     print()
     for h in reversed(items):
         tipo = str(h.get("tipo", "?"))
         fecha = str(h.get("fecha", "?"))
         amen = h.get("amenazas", 0)
+        susp = h.get("sospechosos", 0)
         color = C.RED if amen else C.GREEN
         tipo_col = c("{:<12}".format(tipo), C.BOLD)
         fecha_col = c(fecha, C.DIM)
         amen_col = c(str(amen), color)
-        print("  {}  {}  archivos: {:>6}  amenazas: {}  ({}s)".format(
+        susp_col = c(str(susp), C.YELLOW)
+        print("  {}  {}  archivos: {:>6}  amenazas: {}  sospechosos: {}  ({}s)".format(
             fecha_col, tipo_col, h.get("escaneados", 0),
-            amen_col, h.get("duracion_seg", 0)))
+            amen_col, susp_col, h.get("duracion_seg", 0)))
     print()
     return 0
 
@@ -1768,6 +1934,12 @@ def cmd_watch(args) -> int:
                                 "type": "file",
                             })
                             save_quarantine_records(quarantine_records)
+                    elif res.get("suspicious"):
+                        susp = res["suspicious"]
+                        tag = c("ℹ SOSPECHOSO", C.YELLOW, bold=True)
+                        print("  {}  {}  {} → {} (solo reporte)".format(
+                            c(ts, C.DIM), tag, os.path.basename(fp),
+                            susp.get("name", "sospechoso")))
                     else:
                         tag = c("✓ limpio", C.GREEN)
                         print("  {}  {}     {}".format(
@@ -1971,7 +2143,6 @@ def build_parser() -> argparse.ArgumentParser:
 # Mini-shell final
 # --------------------------------------------------------------------------- #
 def _print_interactive_help() -> None:
-    """Ayuda compacta de la mini-shell."""
     print()
     print(c("  Comandos disponibles en la mini-shell:", C.BOLD))
     print()
@@ -2009,14 +2180,11 @@ def _print_interactive_help() -> None:
 def _interactive_pause(argv: list, force_pause: bool = False,
                        no_pause: bool = False,
                        parser: Optional[argparse.ArgumentParser] = None) -> None:
-    """Mini-shell al terminar. Se cierra solo con: salir | exit | quit | q."""
     if no_pause:
         return
 
     should_pause = force_pause
     if not should_pause:
-        # Se activa automáticamente en Windows cuando el script se abre
-        # con doble clic (sin argumentos).
         if platform.system() == "Windows" and len(argv) == 0:
             should_pause = True
 
@@ -2028,8 +2196,7 @@ def _interactive_pause(argv: list, force_pause: bool = False,
 
     print()
     print(c("  Escribe un comando para seguir operando "
-            "(ej: help, status, url http://...)",
-            C.CYAN, bold=True))
+            "(ej: help, status, url http://...)", C.CYAN, bold=True))
     print(c("  Para cerrar la ventana, escribe: ", C.CYAN) +
           c("salir", C.YELLOW, bold=True) +
           c("   (también: exit, quit, q)", C.DIM))
@@ -2045,32 +2212,26 @@ def _interactive_pause(argv: list, force_pause: bool = False,
 
         line = line.strip()
         if not line:
-            # Enter en blanco: NO cierra, vuelve a pedir (según petición)
             continue
 
         low = line.lower()
 
-        # Salidas explícitas SOLO con estas palabras
         if low in ("salir", "exit", "quit", "q"):
             print(c("  Cerrando ventana... ¡hasta pronto!", C.CYAN, bold=True))
             return
 
-        # Ayuda
         if low in ("help", "?", "ayuda", "h"):
             _print_interactive_help()
             continue
 
-        # Limpiar pantalla
         if low in ("clear", "cls"):
             os.system("cls" if platform.system() == "Windows" else "clear")
             continue
 
-        # Repetir banner
         if low in ("banner", "logo"):
             print_banner()
             continue
 
-        # Parsear con shlex (respeta comillas)
         try:
             parts = shlex.split(line)
         except ValueError as e:
@@ -2080,7 +2241,6 @@ def _interactive_pause(argv: list, force_pause: bool = False,
         if not parts:
             continue
 
-        # Ejecutar subcomando
         try:
             sub_args = parser.parse_args(parts)
             if not getattr(sub_args, "cmd", None):
@@ -2088,7 +2248,6 @@ def _interactive_pause(argv: list, force_pause: bool = False,
                 continue
             sub_args.func(sub_args)
         except SystemExit:
-            # argparse puede llamar a sys.exit en --help o error; ignoramos
             pass
         except KeyboardInterrupt:
             print()
